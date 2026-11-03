@@ -1,0 +1,10 @@
+# Xcode / SwiftPM
+.build/
+DerivedData/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+Packages/
+*.ipa
+*.dSYM.zip
+.DS_Store
