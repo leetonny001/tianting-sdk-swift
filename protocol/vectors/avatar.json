@@ -1,0 +1,193 @@
+{
+  "comment": "占位头像共享用例（PRD-ui F-UI-21、AC-UI-21-1、AC-UI-21-2）。colors：id → FNV-1a-32(UTF-8(id)) mod 8；initials：显示名 → 首字（第一个码点，ASCII 小写字母转大写，先去首尾空白）。由 tools/gen-avatar-vectors.mjs 生成，不要手改。",
+  "colors": [
+    {
+      "id": "alice",
+      "fnv1a32": 2267157479,
+      "index": 7
+    },
+    {
+      "id": "bob",
+      "fnv1a32": 2261164244,
+      "index": 4
+    },
+    {
+      "id": "carol",
+      "fnv1a32": 1728614162,
+      "index": 2
+    },
+    {
+      "id": "dave",
+      "fnv1a32": 3496789471,
+      "index": 7
+    },
+    {
+      "id": "Alice",
+      "fnv1a32": 752715143,
+      "index": 7
+    },
+    {
+      "id": "ALICE",
+      "fnv1a32": 379033735,
+      "index": 7
+    },
+    {
+      "id": "u1",
+      "fnv1a32": 71477235,
+      "index": 3
+    },
+    {
+      "id": "u2",
+      "fnv1a32": 88254854,
+      "index": 6
+    },
+    {
+      "id": "user_01",
+      "fnv1a32": 2987147132,
+      "index": 4
+    },
+    {
+      "id": "user-01",
+      "fnv1a32": 4218091010,
+      "index": 2
+    },
+    {
+      "id": "zhangsan",
+      "fnv1a32": 2272961825,
+      "index": 1
+    },
+    {
+      "id": "lisi",
+      "fnv1a32": 4160436082,
+      "index": 2
+    },
+    {
+      "id": "g1",
+      "fnv1a32": 270542997,
+      "index": 5
+    },
+    {
+      "id": "g2",
+      "fnv1a32": 220210140,
+      "index": 4
+    },
+    {
+      "id": "ug-01J0000000",
+      "fnv1a32": 1544701089,
+      "index": 1
+    },
+    {
+      "id": "weekend-football",
+      "fnv1a32": 2835999152,
+      "index": 0
+    },
+    {
+      "id": "a",
+      "fnv1a32": 3826002220,
+      "index": 4
+    },
+    {
+      "id": "Z",
+      "fnv1a32": 3742114125,
+      "index": 5
+    },
+    {
+      "id": "0",
+      "fnv1a32": 890022063,
+      "index": 7
+    },
+    {
+      "id": "9",
+      "fnv1a32": 1007465396,
+      "index": 4
+    },
+    {
+      "id": "_",
+      "fnv1a32": 3658226030,
+      "index": 6
+    },
+    {
+      "id": "-",
+      "fnv1a32": 671913016,
+      "index": 0
+    },
+    {
+      "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "fnv1a32": 3516603077,
+      "index": 5
+    },
+    {
+      "id": "kefu",
+      "fnv1a32": 3817066940,
+      "index": 4
+    },
+    {
+      "id": "official-01",
+      "fnv1a32": 1097304668,
+      "index": 4
+    },
+    {
+      "id": "test_user_with_long_id_0123456789",
+      "fnv1a32": 4119625031,
+      "index": 7
+    }
+  ],
+  "initials": [
+    {
+      "name": "bob",
+      "initial": "B"
+    },
+    {
+      "name": "Bob",
+      "initial": "B"
+    },
+    {
+      "name": "张三",
+      "initial": "张"
+    },
+    {
+      "name": "李四",
+      "initial": "李"
+    },
+    {
+      "name": "😀abc",
+      "initial": "😀"
+    },
+    {
+      "name": "👨‍👩‍👧 family",
+      "initial": "👨"
+    },
+    {
+      "name": "  alice  ",
+      "initial": "A"
+    },
+    {
+      "name": "élise",
+      "initial": "é"
+    },
+    {
+      "name": "Ωmega",
+      "initial": "Ω"
+    },
+    {
+      "name": "1号",
+      "initial": "1"
+    },
+    {
+      "name": "_hidden",
+      "initial": "_"
+    },
+    {
+      "name": "卡姐",
+      "initial": "卡"
+    },
+    {
+      "name": "ｆｕｌｌ",
+      "initial": "ｆ"
+    },
+    {
+      "name": "?",
+      "initial": "?"
+    }
+  ]
+}

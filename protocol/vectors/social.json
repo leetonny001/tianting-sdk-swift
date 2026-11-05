@@ -1,0 +1,1358 @@
+{
+  "description": "关系同步共享用例（PRD-social 10.3 节）：按顺序执行 steps（begin = 开始一轮；page = 一页 socialSync 应答；event = socialChanged {ver}；ack = 自己发起的修改的 ack），然后按 nowMs（服务端时间）断言 expect。expect.requests 的键为 userId/direction，值为按服务端时间算出的状态；needSync 表示是否要立即（再）开始一轮。copy 是\"命令 + 错误码\"文案（{N} 取 strangerMsgLimit，{name} 取对方显示名）；tips 是群提示消息的本地文案（PRD-ui F-UI-40）。期望结果由服务端的 Go 参考客户端（server/e2e/socialmodel）生成。",
+  "cases": [
+    {
+      "name": "同一个 ver 跨页",
+      "rule": "F-SOC-06 规则 3：游标按排序键严格大于，同 ver 的多行跨页不丢不重",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 4,
+            "latestVer": 4,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "a",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 4,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": false,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": true,
+            "cursor": "opaque-cursor",
+            "friends": [
+              {
+                "userId": "b",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 5,
+                "profile": null
+              },
+              {
+                "userId": "c",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 5,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": false,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "d",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 5,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 5,
+        "friends": {
+          "a": "",
+          "b": "",
+          "c": "",
+          "d": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "全量轮收齐后整体替换",
+      "rule": "F-SOC-06 规则 8：全量轮不含墓碑，本地有而全量没有的项要删除",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 3,
+            "latestVer": 3,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "x",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 2,
+                "profile": null
+              },
+              {
+                "userId": "y",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 3,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 9,
+            "latestVer": 9,
+            "hasMore": true,
+            "cursor": "opaque-cursor",
+            "friends": [
+              {
+                "userId": "z",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 8,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 9,
+            "latestVer": 9,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [],
+            "requests": [],
+            "blocks": [
+              {
+                "userId": "w",
+                "createdAt": 1800000000000,
+                "ver": 9,
+                "profile": null
+              }
+            ],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 9,
+        "friends": {
+          "z": ""
+        },
+        "requests": {},
+        "blocks": [
+          "w"
+        ],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "增量轮的墓碑删除本地项",
+      "rule": "F-SOC-06 规则 2、8：deleted=true 表示删除，按键保留 ver 较大的一项",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 3,
+            "latestVer": 3,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "x",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 2,
+                "profile": null
+              },
+              {
+                "userId": "y",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 3,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": false,
+            "untilVer": 4,
+            "latestVer": 4,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "x",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 4,
+                "deleted": true,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 4,
+        "friends": {
+          "y": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "轮内收到更大的事件：本轮结束后立即再来一轮",
+      "rule": "10.2 节：同步轮进行中收到的事件在本轮结束后处理",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 8,
+            "latestVer": 8,
+            "hasMore": true,
+            "cursor": "opaque-cursor",
+            "friends": [
+              {
+                "userId": "a",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 8,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "event",
+          "ver": 9
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 8,
+            "latestVer": 8,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "b",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 8,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 8,
+        "friends": {
+          "a": "",
+          "b": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": true,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "最后一页 latestVer \u003e untilVer：立即再来一轮",
+      "rule": "F-SOC-06 规则 8",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 8,
+            "latestVer": 10,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "a",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 8,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 8,
+        "friends": {
+          "a": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": true,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "restart：放弃本轮，用同一个 sinceVer 重新开始",
+      "rule": "F-SOC-06 规则 3：增量轮中途执行过清理",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "a",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 5,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": false,
+            "untilVer": 7,
+            "latestVer": 7,
+            "hasMore": true,
+            "cursor": "opaque-cursor",
+            "friends": [
+              {
+                "userId": "b",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 6,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": false,
+            "untilVer": 0,
+            "latestVer": 0,
+            "hasMore": false,
+            "cursor": "",
+            "restart": true,
+            "friends": [],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": false
+            },
+            "mode": "",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 7,
+            "latestVer": 7,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "b",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 6,
+                "profile": null
+              },
+              {
+                "userId": "c",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 7,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 7,
+        "friends": {
+          "b": "",
+          "c": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "sinceVer 小于 purgedVer：服务端判定全量",
+      "rule": "F-SOC-06 规则 5：本地 ver \u003c purgedVer 可能错过了被清理的墓碑",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 3,
+            "latestVer": 3,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "gone",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 3,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 40,
+            "latestVer": 40,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [
+              {
+                "userId": "kept",
+                "remark": "",
+                "source": "other",
+                "createdAt": 1799913600000,
+                "ver": 12,
+                "profile": null
+              }
+            ],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 40,
+        "friends": {
+          "kept": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "ack 的 ver 连续：应用 items 并前进",
+      "rule": "F-SOC-06 规则 7",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "ack",
+          "data": {
+            "changed": true,
+            "items": {
+              "friends": [
+                {
+                  "userId": "z",
+                  "remark": "",
+                  "source": "other",
+                  "createdAt": 1799913600000,
+                  "ver": 6,
+                  "profile": null
+                }
+              ],
+              "requests": [
+                {
+                  "userId": "z",
+                  "direction": "in",
+                  "status": "accepted",
+                  "message": "",
+                  "source": "other",
+                  "applyCount": 1,
+                  "createdAt": 1800000000000,
+                  "updatedAt": 1800000000000,
+                  "expireAt": 1800604800000,
+                  "ver": 6,
+                  "profile": null
+                }
+              ],
+              "blocks": []
+            },
+            "ver": 6
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 6,
+        "friends": {
+          "z": ""
+        },
+        "requests": {
+          "z/in": "accepted"
+        },
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "ack 的 ver 不连续：先应用 items，再从本地 ver 补一轮",
+      "rule": "F-SOC-06 规则 7",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "ack",
+          "data": {
+            "changed": true,
+            "items": {
+              "friends": [
+                {
+                  "userId": "z",
+                  "remark": "",
+                  "source": "other",
+                  "createdAt": 1799913600000,
+                  "ver": 7,
+                  "profile": null
+                }
+              ],
+              "requests": [],
+              "blocks": []
+            },
+            "ver": 7
+          }
+        },
+        {
+          "type": "ack",
+          "data": {
+            "changed": false,
+            "items": {
+              "friends": [],
+              "requests": [],
+              "blocks": []
+            },
+            "ver": 5
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 5,
+        "friends": {
+          "z": ""
+        },
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": true,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "30 天丢弃与过期、红点",
+      "rule": "F-SOC-04 规则 1、2：按服务端时间；红点 = 收到的、pending、未过期、ver \u003e requestSeenVer",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 9,
+            "latestVer": 9,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [],
+            "requests": [
+              {
+                "userId": "old",
+                "direction": "in",
+                "status": "pending",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1797321600000,
+                "updatedAt": 1797321600000,
+                "expireAt": 1797926400000,
+                "ver": 2,
+                "profile": null
+              },
+              {
+                "userId": "expired",
+                "direction": "in",
+                "status": "pending",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1799308800000,
+                "updatedAt": 1799308800000,
+                "expireAt": 1799913600000,
+                "ver": 3,
+                "profile": null
+              },
+              {
+                "userId": "rejected",
+                "direction": "in",
+                "status": "rejected",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1799913600000,
+                "updatedAt": 1799913600000,
+                "expireAt": 1800518400000,
+                "ver": 4,
+                "profile": null
+              },
+              {
+                "userId": "fresh1",
+                "direction": "in",
+                "status": "pending",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1799913600000,
+                "updatedAt": 1799913600000,
+                "expireAt": 1800518400000,
+                "ver": 8,
+                "profile": null
+              },
+              {
+                "userId": "fresh2",
+                "direction": "in",
+                "status": "pending",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1799913600000,
+                "updatedAt": 1799913600000,
+                "expireAt": 1800518400000,
+                "ver": 9,
+                "profile": null
+              },
+              {
+                "userId": "mine",
+                "direction": "out",
+                "status": "pending",
+                "message": "",
+                "source": "other",
+                "applyCount": 1,
+                "createdAt": 1799913600000,
+                "updatedAt": 1799913600000,
+                "expireAt": 1800518400000,
+                "ver": 7,
+                "profile": null
+              }
+            ],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        }
+      ],
+      "expect": {
+        "socialVer": 9,
+        "friends": {},
+        "requests": {
+          "expired/in": "expired",
+          "fresh1/in": "pending",
+          "fresh2/in": "pending",
+          "mine/out": "pending",
+          "rejected/in": "rejected"
+        },
+        "blocks": [],
+        "unread": 2,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    },
+    {
+      "name": "事件 ver 不大于本地 ver：忽略",
+      "rule": "10.2 节",
+      "nowMs": 1800000000000,
+      "steps": [
+        {
+          "type": "begin"
+        },
+        {
+          "type": "page",
+          "data": {
+            "full": true,
+            "untilVer": 5,
+            "latestVer": 5,
+            "hasMore": false,
+            "cursor": "",
+            "friends": [],
+            "requests": [],
+            "blocks": [],
+            "requestSeenVer": 0,
+            "settings": {
+              "searchable": true
+            },
+            "mode": "open",
+            "strangerMsgLimit": 0,
+            "official": false
+          }
+        },
+        {
+          "type": "event",
+          "ver": 5
+        },
+        {
+          "type": "event",
+          "ver": 3
+        }
+      ],
+      "expect": {
+        "socialVer": 5,
+        "friends": {},
+        "requests": {},
+        "blocks": [],
+        "unread": 0,
+        "needSync": false,
+        "lastNext": "done"
+      }
+    }
+  ],
+  "copy": [
+    {
+      "cmd": "send",
+      "code": 4290,
+      "text": "发送太频繁，请稍后再试"
+    },
+    {
+      "cmd": "friendApply",
+      "code": 4290,
+      "text": "操作太频繁，请稍后再试"
+    },
+    {
+      "cmd": "send",
+      "code": 4035,
+      "text": "对方开启了好友验证，你还不是他的好友"
+    },
+    {
+      "cmd": "send",
+      "code": 4036,
+      "text": "消息已发出，但被对方拒收了"
+    },
+    {
+      "cmd": "send",
+      "code": 4137,
+      "text": "对方回复之前，最多只能发送 {N} 条消息"
+    },
+    {
+      "cmd": "send",
+      "code": 4292,
+      "text": "今天发起新聊天的次数已用完，请稍后再试"
+    },
+    {
+      "cmd": "friendApply",
+      "code": 4132,
+      "text": "你的好友数量已达上限"
+    },
+    {
+      "cmd": "friendRespond",
+      "code": 4132,
+      "text": "你的好友数量已达上限"
+    },
+    {
+      "cmd": "friendRespond",
+      "code": 4133,
+      "text": "对方好友数量已达上限"
+    },
+    {
+      "cmd": "friendApply",
+      "code": 4133,
+      "text": "对方好友数量已达上限"
+    },
+    {
+      "cmd": "friendRespond",
+      "code": 4045,
+      "text": "该申请已过期"
+    },
+    {
+      "cmd": "block",
+      "code": 4134,
+      "text": "黑名单已满"
+    },
+    {
+      "cmd": "friendApply",
+      "code": 4292,
+      "text": "今天的次数已用完，明天再试"
+    },
+    {
+      "cmd": "userSearch",
+      "code": 4292,
+      "text": "今天的次数已用完，明天再试"
+    },
+    {
+      "cmd": "block",
+      "code": 4292,
+      "text": "今天的次数已用完，明天再试"
+    },
+    {
+      "cmd": "unblock",
+      "code": 4292,
+      "text": "今天的次数已用完，明天再试"
+    },
+    {
+      "cmd": "groupCreate",
+      "code": 4035,
+      "text": "{name} 不是你的好友，无法邀请"
+    },
+    {
+      "cmd": "groupInvite",
+      "code": 4035,
+      "text": "{name} 不是你的好友，无法邀请"
+    },
+    {
+      "cmd": "groupCreate",
+      "code": 4135,
+      "text": "{name} 加入的群聊已达上限"
+    },
+    {
+      "cmd": "groupInvite",
+      "code": 4135,
+      "text": "{name} 加入的群聊已达上限"
+    },
+    {
+      "cmd": "groupCreate",
+      "code": 4030,
+      "text": "当前不允许创建群聊"
+    },
+    {
+      "cmd": "groupCreate",
+      "code": 4292,
+      "text": "今天的次数已用完，明天再试"
+    },
+    {
+      "cmd": "groupTransfer",
+      "code": 4046,
+      "text": "对方已不在群里"
+    },
+    {
+      "cmd": "groupSetAdmin",
+      "code": 4046,
+      "text": "对方已不在群里"
+    },
+    {
+      "cmd": "groupSetAdmin",
+      "code": 4136,
+      "text": "管理员最多 10 人"
+    }
+  ],
+  "tips": [
+    {
+      "me": "alice",
+      "tip": {
+        "kind": "created",
+        "actor": "alice",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "你创建了群聊"
+    },
+    {
+      "me": "bob",
+      "tip": {
+        "kind": "created",
+        "actor": "alice",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "alice 创建了群聊"
+    },
+    {
+      "me": "alice",
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "carol",
+          "dave"
+        ],
+        "text": ""
+      },
+      "text": "bob 邀请 carol、dave 加入了群聊"
+    },
+    {
+      "me": "alice",
+      "names": {
+        "carol": "卡姐"
+      },
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "carol",
+          "dave"
+        ],
+        "text": ""
+      },
+      "text": "bob 邀请 卡姐、dave 加入了群聊"
+    },
+    {
+      "me": "bob",
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "dave"
+        ],
+        "text": ""
+      },
+      "text": "你邀请 dave 加入了群聊"
+    },
+    {
+      "me": "dave",
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "dave"
+        ],
+        "text": ""
+      },
+      "text": "bob 邀请 你 加入了群聊"
+    },
+    {
+      "me": "alice",
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "ua",
+          "ub",
+          "uc",
+          "ud",
+          "ue",
+          "uf",
+          "ug",
+          "uh",
+          "ui",
+          "uj",
+          "uk",
+          "ul",
+          "um",
+          "un",
+          "uo",
+          "up",
+          "uq",
+          "ur",
+          "us",
+          "ut"
+        ],
+        "count": 35,
+        "text": ""
+      },
+      "text": "bob 邀请 ua、ub、uc 等 35 人 加入了群聊"
+    },
+    {
+      "me": "alice",
+      "tip": {
+        "kind": "joined",
+        "actor": "bob",
+        "targets": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "text": ""
+      },
+      "text": "bob 邀请 a、b、c 等 4 人 加入了群聊"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "ownerChanged",
+        "actor": "alice",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "alice 将群主转让给 bob"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "ownerChanged",
+        "actor": "",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "bob 已成为群主"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "ownerChanged",
+        "actor": "",
+        "targets": [],
+        "text": ""
+      },
+      "text": "群主已退出群聊"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "adminSet",
+        "actor": "alice",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "alice 将 bob 设为管理员"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "adminUnset",
+        "actor": "alice",
+        "targets": [
+          "bob"
+        ],
+        "text": ""
+      },
+      "text": "alice 取消了 bob 的管理员"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "renamed",
+        "actor": "alice",
+        "targets": [],
+        "text": "周六球局"
+      },
+      "text": "alice 修改群名为\"周六球局\""
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "noticeUpdated",
+        "actor": "alice",
+        "targets": [],
+        "text": "周六 9 点"
+      },
+      "text": "alice 更新了群公告"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "futureKind",
+        "actor": "alice",
+        "targets": [],
+        "text": ""
+      },
+      "text": "[群通知]"
+    }
+  ]
+}

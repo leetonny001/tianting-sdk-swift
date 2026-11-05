@@ -1,0 +1,2533 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://im-mvp.local/protocol/frame.schema.json",
+  "title": "IM WebSocket Frame (v1)",
+  "description": "WebSocket 上传输的每一帧。客户端 → 服务端为 ClientFrame，服务端 → 客户端为 ServerFrame。对应 PRD-core v1.3、PRD-social v1.0（M3）。",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ClientFrame"
+    },
+    {
+      "$ref": "#/$defs/ServerFrame"
+    }
+  ],
+  "$defs": {
+    "ReqId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "客户端生成的请求 ID，服务端在 ack 中原样带回"
+    },
+    "UserId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "ConvType": {
+      "enum": [
+        "c2c",
+        "group",
+        "room"
+      ]
+    },
+    "ConvId": {
+      "type": "string",
+      "pattern": "^(c2c:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+|group:[A-Za-z0-9_-]+|room:[A-Za-z0-9_-]+)$",
+      "description": "c2c:{较小uid}:{较大uid}（ASCII 字节序）| group:{gid} | room:{rid}"
+    },
+    "Seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "会话内单调递增序号；聊天室消息没有 seq"
+    },
+    "TimestampMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "MsgType": {
+      "enum": [
+        "text",
+        "custom",
+        "tip"
+      ],
+      "description": "tip 由服务端生成，客户端不能发送"
+    },
+    "MsgBody": {
+      "type": "object",
+      "description": "text: {text}；custom: {data}，data 为业务自定义 JSON；tip: {tip}（只由服务端生成）",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "data": {},
+        "tip": {
+          "$ref": "#/$defs/TipBody"
+        }
+      },
+      "minProperties": 1
+    },
+    "Error": {
+      "type": "object",
+      "required": [
+        "code",
+        "msg"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "description": "见 protocol/errors.json"
+        },
+        "msg": {
+          "type": "string"
+        },
+        "userId": {
+          "$ref": "#/$defs/UserId",
+          "description": "建群失败时指出是哪个人"
+        },
+        "details": {
+          "type": "object",
+          "description": "可选的扩展信息（PRD-admin 11.1 节）：4031 → {scope, groupId?, mutedUntil}，4034 → {bannedUntil}；SDK 忽略不认识的键"
+        },
+        "reason": {
+          "type": "string",
+          "description": "细分同一个错误码，如 4030 的 c2cBodyDisabled（PRD-admin 10.3 节）"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClientFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/AuthReq"
+        },
+        {
+          "$ref": "#/$defs/SendReq"
+        },
+        {
+          "$ref": "#/$defs/SyncReq"
+        },
+        {
+          "$ref": "#/$defs/ConvsReq"
+        },
+        {
+          "$ref": "#/$defs/JoinRoomReq"
+        },
+        {
+          "$ref": "#/$defs/LeaveRoomReq"
+        },
+        {
+          "$ref": "#/$defs/ReadReq"
+        },
+        {
+          "$ref": "#/$defs/FriendApplyReq"
+        },
+        {
+          "$ref": "#/$defs/FriendRespondReq"
+        },
+        {
+          "$ref": "#/$defs/FriendDeleteReq"
+        },
+        {
+          "$ref": "#/$defs/FriendRemarkReq"
+        },
+        {
+          "$ref": "#/$defs/FriendRequestsSeenReq"
+        },
+        {
+          "$ref": "#/$defs/SocialSyncReq"
+        },
+        {
+          "$ref": "#/$defs/BlockReq"
+        },
+        {
+          "$ref": "#/$defs/UnblockReq"
+        },
+        {
+          "$ref": "#/$defs/UserSearchReq"
+        },
+        {
+          "$ref": "#/$defs/SetPrivacyReq"
+        },
+        {
+          "$ref": "#/$defs/UsersReq"
+        },
+        {
+          "$ref": "#/$defs/MyGroupsReq"
+        },
+        {
+          "$ref": "#/$defs/GroupCreateReq"
+        },
+        {
+          "$ref": "#/$defs/GroupInviteReq"
+        },
+        {
+          "$ref": "#/$defs/GroupLeaveReq"
+        },
+        {
+          "$ref": "#/$defs/GroupKickReq"
+        },
+        {
+          "$ref": "#/$defs/GroupTransferReq"
+        },
+        {
+          "$ref": "#/$defs/GroupSetAdminReq"
+        },
+        {
+          "$ref": "#/$defs/GroupDissolveReq"
+        },
+        {
+          "$ref": "#/$defs/GroupUpdateReq"
+        },
+        {
+          "$ref": "#/$defs/GroupInfoReq"
+        },
+        {
+          "$ref": "#/$defs/GroupMembersReq"
+        },
+        {
+          "$ref": "#/$defs/Ping"
+        }
+      ]
+    },
+    "AuthReq": {
+      "type": "object",
+      "description": "连接后的第一帧，必须在 5 秒内发送（PRD C-52）；token 不放在 URL 里",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "auth"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "token"
+          ],
+          "properties": {
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SendReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "send"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "convType",
+            "to",
+            "clientMsgId",
+            "type",
+            "body"
+          ],
+          "properties": {
+            "convType": {
+              "$ref": "#/$defs/ConvType"
+            },
+            "to": {
+              "type": "string",
+              "minLength": 1,
+              "description": "c2c 为对方 uid；group 为 gid；room 为 rid"
+            },
+            "clientMsgId": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 64,
+              "description": "客户端生成（建议 UUID），用于去重"
+            },
+            "type": {
+              "$ref": "#/$defs/MsgType"
+            },
+            "body": {
+              "$ref": "#/$defs/MsgBody"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SyncReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "sync"
+        },
+        "data": {
+          "type": "object",
+          "description": "afterSeq（拉取之后的，补拉用）与 beforeSeq（拉取之前最近的，翻页用）二选一；结果都按 seq 升序",
+          "required": [
+            "convId"
+          ],
+          "properties": {
+            "convId": {
+              "$ref": "#/$defs/ConvId"
+            },
+            "afterSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "beforeSeq": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "afterSeq"
+              ],
+              "not": {
+                "required": [
+                  "beforeSeq"
+                ]
+              }
+            },
+            {
+              "required": [
+                "beforeSeq"
+              ],
+              "not": {
+                "required": [
+                  "afterSeq"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConvsReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "convs"
+        },
+        "data": {
+          "type": "object",
+          "maxProperties": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "JoinRoomReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "joinRoom"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "roomId"
+          ],
+          "properties": {
+            "roomId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "LeaveRoomReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "leaveRoom"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "roomId"
+          ],
+          "properties": {
+            "roomId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReadReq": {
+      "type": "object",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "read"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "convId",
+            "seq"
+          ],
+          "properties": {
+            "convId": {
+              "$ref": "#/$defs/ConvId"
+            },
+            "seq": {
+              "$ref": "#/$defs/Seq"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ping": {
+      "type": "object",
+      "required": [
+        "cmd"
+      ],
+      "properties": {
+        "cmd": {
+          "const": "ping"
+        }
+      },
+      "additionalProperties": false
+    },
+    "FriendApplyReq": {
+      "type": "object",
+      "description": "PRD-social F-SOC-02",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "friendApply"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "to"
+          ],
+          "properties": {
+            "to": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "附言，去首尾空白后 0～50 个码点"
+            },
+            "source": {
+              "enum": [
+                "search",
+                "group",
+                "card",
+                "conv",
+                "other"
+              ],
+              "default": "other"
+            },
+            "sourceRef": {
+              "type": "string",
+              "description": "source=group 时必填，为 groupId"
+            },
+            "remark": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "同意后我给对方的预设备注，0～32 个码点"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "FriendRespondReq": {
+      "type": "object",
+      "description": "F-SOC-03",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "friendRespond"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "from",
+            "action"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "enum": [
+                "accept",
+                "reject"
+              ]
+            },
+            "remark": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "同意时我给对方的备注"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "FriendDeleteReq": {
+      "type": "object",
+      "description": "F-SOC-05：单向删除",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "friendDelete"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "userId"
+          ],
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "FriendRemarkReq": {
+      "type": "object",
+      "description": "F-SOC-05",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "friendRemark"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "userId",
+            "remark"
+          ],
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "remark": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "去空白后为空表示清除"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "FriendRequestsSeenReq": {
+      "type": "object",
+      "description": "F-SOC-04",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "friendRequestsSeen"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "ver"
+          ],
+          "properties": {
+            "ver": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SocialSyncReq": {
+      "type": "object",
+      "description": "F-SOC-06：第一页 {sinceVer}，之后 {cursor}，二选一",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "socialSync"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "sinceVer": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cursor": {
+              "type": "string",
+              "minLength": 1
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 500
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "sinceVer"
+              ],
+              "not": {
+                "required": [
+                  "cursor"
+                ]
+              }
+            },
+            {
+              "required": [
+                "cursor"
+              ],
+              "not": {
+                "required": [
+                  "sinceVer"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "BlockReq": {
+      "type": "object",
+      "description": "F-SOC-07",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "block"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "userId"
+          ],
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UnblockReq": {
+      "type": "object",
+      "description": "F-SOC-07",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "unblock"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "userId"
+          ],
+          "properties": {
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UserSearchReq": {
+      "type": "object",
+      "description": "F-SOC-09",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "userSearch"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "keyword"
+          ],
+          "properties": {
+            "keyword": {
+              "type": "string",
+              "description": "去首尾空白后必须是合法 userId，只做精确匹配"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "SetPrivacyReq": {
+      "type": "object",
+      "description": "F-SOC-09",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "setPrivacy"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "searchable"
+          ],
+          "properties": {
+            "searchable": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "UsersReq": {
+      "type": "object",
+      "description": "F-SOC-10：只返回可见范围内的用户",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "users"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "userIds"
+          ],
+          "properties": {
+            "userIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "MyGroupsReq": {
+      "type": "object",
+      "description": "F-SOC-11",
+      "required": [
+        "id",
+        "cmd"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "myGroups"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 200
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupCreateReq": {
+      "type": "object",
+      "description": "PRD-social F-SOC-21",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupCreate"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "clientReqId",
+            "members"
+          ],
+          "properties": {
+            "clientReqId": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 64
+            },
+            "name": {
+              "type": "string"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupInviteReq": {
+      "type": "object",
+      "description": "F-SOC-22",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupInvite"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId",
+            "members"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 50
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupLeaveReq": {
+      "type": "object",
+      "description": "F-SOC-23",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupLeave"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupKickReq": {
+      "type": "object",
+      "description": "F-SOC-24",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupKick"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId",
+            "members"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 50
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupTransferReq": {
+      "type": "object",
+      "description": "F-SOC-25",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupTransfer"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId",
+            "to"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "to": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupSetAdminReq": {
+      "type": "object",
+      "description": "F-SOC-25",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupSetAdmin"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId",
+            "userId",
+            "admin"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "userId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "admin": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupDissolveReq": {
+      "type": "object",
+      "description": "F-SOC-26",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupDissolve"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupUpdateReq": {
+      "type": "object",
+      "description": "F-SOC-27：name、notice 至少一项",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupUpdate"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string"
+            },
+            "notice": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupInfoReq": {
+      "type": "object",
+      "description": "F-SOC-20",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupInfo"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupMembersReq": {
+      "type": "object",
+      "description": "F-SOC-28",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "groupMembers"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "groupId"
+          ],
+          "properties": {
+            "groupId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "TipBody": {
+      "type": "object",
+      "description": "群提示消息（F-SOC-29）：actor 为空表示系统操作；targets 最多 20 个，超过时带 count；不认识的 kind 显示\"[群通知]\"",
+      "required": [
+        "kind",
+        "actor",
+        "targets",
+        "text"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UserId"
+          },
+          "maxItems": 20
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Profile": {
+      "description": "资料（应答时的最新值）；可能为 null（F-SOC-06 规则 9）",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "nickname",
+            "avatar",
+            "official"
+          ],
+          "properties": {
+            "nickname": {
+              "type": "string"
+            },
+            "avatar": {
+              "type": "string"
+            },
+            "official": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "FriendItem": {
+      "type": "object",
+      "required": [
+        "userId",
+        "remark",
+        "source",
+        "createdAt",
+        "ver",
+        "profile"
+      ],
+      "properties": {
+        "userId": {
+          "$ref": "#/$defs/UserId"
+        },
+        "remark": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "search",
+            "group",
+            "card",
+            "conv",
+            "other",
+            "admin"
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "ver": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "墓碑（增量轮）"
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RequestItem": {
+      "type": "object",
+      "required": [
+        "userId",
+        "direction",
+        "status",
+        "message",
+        "source",
+        "applyCount",
+        "createdAt",
+        "updatedAt",
+        "expireAt",
+        "ver",
+        "profile"
+      ],
+      "properties": {
+        "userId": {
+          "$ref": "#/$defs/UserId"
+        },
+        "direction": {
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "accepted",
+            "rejected",
+            "expired"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "search",
+            "group",
+            "card",
+            "conv",
+            "other"
+          ]
+        },
+        "applyCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "createdAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "expireAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "ver": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile",
+          "description": "direction=out 且 status≠accepted 时为 null"
+        }
+      },
+      "additionalProperties": false
+    },
+    "BlockItem": {
+      "type": "object",
+      "required": [
+        "userId",
+        "createdAt",
+        "ver",
+        "profile"
+      ],
+      "properties": {
+        "userId": {
+          "$ref": "#/$defs/UserId"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "ver": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile",
+          "description": "对方不在可见范围内时为 null"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SocialItems": {
+      "type": "object",
+      "required": [
+        "friends",
+        "requests",
+        "blocks"
+      ],
+      "properties": {
+        "friends": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FriendItem"
+          }
+        },
+        "requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RequestItem"
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BlockItem"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ServerFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Ack"
+        },
+        {
+          "$ref": "#/$defs/MsgFrame"
+        },
+        {
+          "$ref": "#/$defs/PushFrame"
+        },
+        {
+          "$ref": "#/$defs/EventFrame"
+        },
+        {
+          "$ref": "#/$defs/Pong"
+        }
+      ]
+    },
+    "Message": {
+      "type": "object",
+      "required": [
+        "msgId",
+        "clientMsgId",
+        "convId",
+        "from",
+        "type",
+        "ts"
+      ],
+      "properties": {
+        "msgId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientMsgId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "convId": {
+          "$ref": "#/$defs/ConvId"
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{0,64}$"
+        },
+        "type": {
+          "$ref": "#/$defs/MsgType"
+        },
+        "body": {
+          "$ref": "#/$defs/MsgBody"
+        },
+        "ts": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "被删除（第二批，F-MSG-05 规则 7）：这时没有 body，seq 不留空洞"
+        },
+        "deletedAt": {
+          "$ref": "#/$defs/TimestampMs"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "tip"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/UserId"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "deleted": {
+                "const": true
+              }
+            },
+            "required": [
+              "deleted"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "body"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "body"
+            ]
+          }
+        }
+      ]
+    },
+    "LastMsg": {
+      "description": "会话最后一条消息的摘要；没有消息时为 null",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "msgId",
+            "from",
+            "type",
+            "ts"
+          ],
+          "properties": {
+            "msgId": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{0,64}$"
+            },
+            "type": {
+              "$ref": "#/$defs/MsgType"
+            },
+            "text": {
+              "type": "string",
+              "description": "摘要，最多 100 个码点；custom 消息为空字符串"
+            },
+            "ts": {
+              "$ref": "#/$defs/TimestampMs"
+            },
+            "deleted": {
+              "type": "boolean",
+              "description": "最后一条消息被删除（第二批，F-ADM-31 规则 3）：这时没有 text，显示「该消息已被删除」"
+            }
+          },
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "tip"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "from": {
+                    "$ref": "#/$defs/UserId"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "deleted": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "deleted"
+                ]
+              },
+              "then": {
+                "not": {
+                  "required": [
+                    "text"
+                  ]
+                }
+              },
+              "else": {
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "Conversation": {
+      "type": "object",
+      "required": [
+        "convId",
+        "type",
+        "name",
+        "maxSeq",
+        "readSeq",
+        "minSeq",
+        "unread",
+        "lastMsg",
+        "updatedAt"
+      ],
+      "properties": {
+        "convId": {
+          "$ref": "#/$defs/ConvId"
+        },
+        "type": {
+          "enum": [
+            "c2c",
+            "group"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "单聊为对方 userId（或昵称，P1），群聊为群名"
+        },
+        "maxSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readSeq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "当前用户能拉到的最小 seq（群历史可见性）"
+        },
+        "unread": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastMsg": {
+          "$ref": "#/$defs/LastMsg"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "memberCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "群成员数（PRD-core V-07）；单聊不带。客户端遇到缺失时只显示群名"
+        },
+        "myRole": {
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ],
+          "description": "群里我的角色（M4）；单聊不带"
+        },
+        "mutedUntil": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/TimestampMs"
+            }
+          ],
+          "description": "我在该群被禁言时才出现，永久禁言为 null（第二批）；单聊不带"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ack": {
+      "type": "object",
+      "description": "id 只在请求帧本身无法解析出 id 时缺省（此时必带 error）",
+      "required": [
+        "cmd"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "ack"
+        },
+        "data": {
+          "type": "object",
+          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}",
+          "properties": {
+            "userId": {
+              "$ref": "#/$defs/UserId"
+            },
+            "serverTime": {
+              "$ref": "#/$defs/TimestampMs"
+            },
+            "msgId": {
+              "type": "string"
+            },
+            "convId": {
+              "$ref": "#/$defs/ConvId"
+            },
+            "seq": {
+              "$ref": "#/$defs/Seq"
+            },
+            "ts": {
+              "$ref": "#/$defs/TimestampMs"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Message"
+              }
+            },
+            "hasMore": {
+              "type": "boolean"
+            },
+            "convs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Conversation"
+              },
+              "maxItems": 500
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "online": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Message"
+              }
+            },
+            "status": {
+              "enum": [
+                "pending",
+                "accepted"
+              ]
+            },
+            "ver": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "changed": {
+              "type": "boolean"
+            },
+            "items": {
+              "$ref": "#/$defs/SocialItems"
+            },
+            "full": {
+              "type": "boolean"
+            },
+            "untilVer": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "latestVer": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cursor": {
+              "type": "string",
+              "description": "不透明；hasMore=false 时为空字符串"
+            },
+            "restart": {
+              "type": "boolean"
+            },
+            "friends": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FriendItem"
+              }
+            },
+            "requests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RequestItem"
+              }
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BlockItem"
+              }
+            },
+            "requestSeenVer": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "settings": {
+              "type": "object",
+              "required": [
+                "searchable"
+              ],
+              "properties": {
+                "searchable": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "mode": {
+              "enum": [
+                "open",
+                "friends"
+              ]
+            },
+            "strangerMsgLimit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "official": {
+              "type": "boolean"
+            },
+            "user": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "userId",
+                    "nickname",
+                    "avatar",
+                    "official",
+                    "relation"
+                  ],
+                  "properties": {
+                    "userId": {
+                      "$ref": "#/$defs/UserId"
+                    },
+                    "nickname": {
+                      "type": "string"
+                    },
+                    "avatar": {
+                      "type": "string"
+                    },
+                    "official": {
+                      "type": "boolean"
+                    },
+                    "relation": {
+                      "enum": [
+                        "self",
+                        "blocked",
+                        "friend",
+                        "pendingIn",
+                        "pendingOut",
+                        "none"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "users": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "nickname",
+                  "avatar",
+                  "official"
+                ],
+                "properties": {
+                  "userId": {
+                    "$ref": "#/$defs/UserId"
+                  },
+                  "nickname": {
+                    "type": "string"
+                  },
+                  "avatar": {
+                    "type": "string"
+                  },
+                  "official": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "groups": {
+              "type": "array",
+              "maxItems": 200,
+              "items": {
+                "type": "object",
+                "required": [
+                  "groupId",
+                  "name",
+                  "memberCount",
+                  "joinedAt",
+                  "myRole"
+                ],
+                "properties": {
+                  "groupId": {
+                    "$ref": "#/$defs/UserId"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "memberCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "joinedAt": {
+                    "$ref": "#/$defs/TimestampMs"
+                  },
+                  "myRole": {
+                    "enum": [
+                      "owner",
+                      "admin",
+                      "member"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "nextCursor": {
+              "type": "string",
+              "description": "空字符串表示没有更多"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "conv": {
+              "$ref": "#/$defs/Conversation"
+            },
+            "added": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UserId"
+              }
+            },
+            "failed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "code"
+                ],
+                "properties": {
+                  "userId": {
+                    "$ref": "#/$defs/UserId"
+                  },
+                  "code": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "removed": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UserId"
+              }
+            },
+            "name": {
+              "type": "string"
+            },
+            "notice": {
+              "type": "string"
+            },
+            "noticeBy": {
+              "type": "string"
+            },
+            "noticeAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "owner": {
+              "type": "string"
+            },
+            "managed": {
+              "type": "boolean"
+            },
+            "myRole": {
+              "enum": [
+                "owner",
+                "admin",
+                "member"
+              ]
+            },
+            "memberCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maxMembers": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "historyVisible": {
+              "type": "boolean"
+            },
+            "createdAt": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "userId",
+                  "role",
+                  "joinedAt",
+                  "nickname",
+                  "avatar",
+                  "official"
+                ],
+                "properties": {
+                  "userId": {
+                    "$ref": "#/$defs/UserId"
+                  },
+                  "role": {
+                    "enum": [
+                      "owner",
+                      "admin",
+                      "member"
+                    ]
+                  },
+                  "joinedAt": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "nickname": {
+                    "type": "string"
+                  },
+                  "avatar": {
+                    "type": "string"
+                  },
+                  "official": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "mutedUntil": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/TimestampMs"
+                }
+              ],
+              "description": "auth：用户被用户级禁言时才出现，永久为 null（第二批）"
+            }
+          },
+          "additionalProperties": false
+        },
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "not": {
+        "required": [
+          "data",
+          "error"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "MsgFrame": {
+      "type": "object",
+      "required": [
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "cmd": {
+          "const": "msg"
+        },
+        "data": {
+          "$ref": "#/$defs/Message"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PushFrame": {
+      "type": "object",
+      "required": [
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "cmd": {
+          "const": "push"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "type",
+            "data"
+          ],
+          "properties": {
+            "pushId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1,
+              "description": "业务类型，如 goal / withdraw / liveStatus（二期）"
+            },
+            "data": {},
+            "ts": {
+              "$ref": "#/$defs/TimestampMs"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "EventFrame": {
+      "type": "object",
+      "required": [
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "cmd": {
+          "const": "event"
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "reason"
+              ],
+              "properties": {
+                "type": {
+                  "const": "kicked"
+                },
+                "reason": {
+                  "enum": [
+                    "tokenInvalid",
+                    "tokenExpired",
+                    "banned",
+                    "suspended",
+                    "tooManyConnections",
+                    "serverShutdown",
+                    "replaced"
+                  ]
+                },
+                "until": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/TimestampMs"
+                    }
+                  ],
+                  "description": "只在 reason=suspended 时出现：封禁到期时间，永久为 null（第二批）"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "conv"
+              ],
+              "properties": {
+                "type": {
+                  "const": "convAdded"
+                },
+                "conv": {
+                  "$ref": "#/$defs/Conversation"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "convId"
+              ],
+              "properties": {
+                "type": {
+                  "const": "convRemoved"
+                },
+                "convId": {
+                  "$ref": "#/$defs/ConvId"
+                },
+                "reason": {
+                  "enum": [
+                    "removed",
+                    "dissolved",
+                    "left"
+                  ],
+                  "description": "被移出 / 群被解散 / 主动退群（M4）；老服务端不带"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "convId",
+                "readSeq"
+              ],
+              "properties": {
+                "type": {
+                  "const": "readUpdated"
+                },
+                "convId": {
+                  "$ref": "#/$defs/ConvId"
+                },
+                "readSeq": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "convId",
+                "msgIds",
+                "seqs"
+              ],
+              "properties": {
+                "type": {
+                  "const": "msgDeleted"
+                },
+                "convId": {
+                  "$ref": "#/$defs/ConvId"
+                },
+                "msgIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "seqs": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/Seq"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "scope",
+                "mutedUntil"
+              ],
+              "properties": {
+                "type": {
+                  "const": "muted"
+                },
+                "scope": {
+                  "enum": [
+                    "user",
+                    "group",
+                    "groupAll"
+                  ]
+                },
+                "groupId": {
+                  "$ref": "#/$defs/UserId"
+                },
+                "mutedUntil": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/TimestampMs"
+                    }
+                  ],
+                  "description": "到期时间，永久为 null"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "scope"
+              ],
+              "properties": {
+                "type": {
+                  "const": "unmuted"
+                },
+                "scope": {
+                  "enum": [
+                    "user",
+                    "group",
+                    "groupAll"
+                  ]
+                },
+                "groupId": {
+                  "$ref": "#/$defs/UserId"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "roomId",
+                "online"
+              ],
+              "properties": {
+                "type": {
+                  "const": "roomOnline"
+                },
+                "roomId": {
+                  "type": "string"
+                },
+                "online": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "PRD-social：只发给 ver 变化了的用户，排除发起操作的连接；投递尽力而为",
+              "required": [
+                "type",
+                "ver"
+              ],
+              "properties": {
+                "type": {
+                  "const": "socialChanged"
+                },
+                "ver": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "业务方修改配置后发给全部在线连接，尽力投递",
+              "required": [
+                "type",
+                "mode",
+                "strangerMsgLimit"
+              ],
+              "properties": {
+                "type": {
+                  "const": "socialSettingsChanged"
+                },
+                "mode": {
+                  "enum": [
+                    "open",
+                    "friends"
+                  ]
+                },
+                "strangerMsgLimit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "群资料或成员变化的提醒（M4）；同一个群至少间隔 1 秒合并发送",
+              "required": [
+                "type",
+                "groupId"
+              ],
+              "properties": {
+                "type": {
+                  "const": "groupChanged"
+                },
+                "groupId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Pong": {
+      "type": "object",
+      "required": [
+        "cmd"
+      ],
+      "properties": {
+        "cmd": {
+          "const": "pong"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

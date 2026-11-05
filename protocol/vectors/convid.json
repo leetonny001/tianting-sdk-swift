@@ -1,0 +1,25 @@
+{
+  "comment": "会话 ID 严格解析的共享用例（PRD-ui AC-UI-33-13、G-UI-03）。三套 SDK 的 parseConvIdStrict 都跑这一份：ok 为期望结果，error 为期望抛出的 ConvIdError.kind（invalid | notParticipant）。userId / groupId 格式：[A-Za-z0-9_-]{1,64}；单聊两个 ID 按 ASCII 字节序递增；两个相同只允许是自己（给自己发消息，PRD-ui AC-UI-05-3、F-MSG-01 规则 4；见勘误 E-23）。",
+  "self": "alice",
+  "cases": [
+    { "convId": "c2c:alice:bob", "ok": { "convType": "c2c", "to": "bob" } },
+    { "convId": "c2c:Bob:alice", "ok": { "convType": "c2c", "to": "Bob" } },
+    { "convId": "group:g1", "ok": { "convType": "group", "to": "g1" } },
+    { "convId": "group:a_b-c", "ok": { "convType": "group", "to": "a_b-c" } },
+    { "convId": "c2c:bob:carol", "error": "notParticipant" },
+    { "convId": "abc", "error": "invalid" },
+    { "convId": "", "error": "invalid" },
+    { "convId": "c2c:abc", "error": "invalid" },
+    { "convId": "c2c:bob:alice", "error": "invalid" },
+    { "convId": "c2c:alice:alice", "ok": { "convType": "c2c", "to": "alice" } },
+    { "convId": "c2c:bob:bob", "error": "notParticipant" },
+    { "convId": "c2c:alice:bob:x", "error": "invalid" },
+    { "convId": "c2c:alice:b.b", "error": "invalid" },
+    { "convId": "c2c::alice", "error": "invalid" },
+    { "convId": "group:", "error": "invalid" },
+    { "convId": "group:g1:x", "error": "invalid" },
+    { "convId": "group:g 1", "error": "invalid" },
+    { "convId": "room:r1", "error": "invalid" },
+    { "convId": "GROUP:g1", "error": "invalid" }
+  ]
+}

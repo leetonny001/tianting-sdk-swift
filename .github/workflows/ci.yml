@@ -1,0 +1,57 @@
+# tianting-sdk-swift CI: generated error codes match the protocol copy, build for iOS, unit tests.
+# Integration tests need tianting-server's source (a private repo): they run only when the read-only deploy key secret
+# TIANTING_SERVER_DEPLOY_KEY is configured (scripts/setup-ci-deploy-key.sh) and skip otherwise.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: ErrorCodes.gen.swift matches protocol/errors.json
+        run: python3 -I scripts/gen-errors/gen_errors.py --check
+      - name: Build for iOS Simulator
+        run: xcodebuild -scheme TiantingIM-Package -destination 'generic/platform=iOS Simulator' build
+      - name: Unit tests (fake transport + fake clock)
+        run: swift test --skip TiantingIMIntegrationTests
+
+  integration:
+    runs-on: macos-latest
+    env:
+      HAS_KEY: ${{ secrets.TIANTING_SERVER_DEPLOY_KEY != '' }}
+    steps:
+      - name: Deploy key not configured, skipping integration tests
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::TIANTING_SERVER_DEPLOY_KEY is not configured; integration tests skipped"
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+      - name: Check out tianting-server (read-only deploy key)
+        if: env.HAS_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: leetonny001/tianting-server
+          ssh-key: ${{ secrets.TIANTING_SERVER_DEPLOY_KEY }}
+          path: tianting-server
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        if: env.HAS_KEY == 'true'
+        with:
+          go-version-file: tianting-server/server/go.mod
+          cache-dependency-path: tianting-server/server/go.sum
+      - name: Integration tests (real im-server)
+        if: env.HAS_KEY == 'true'
+        run: swift test --filter TiantingIMIntegrationTests
+        env:
+          TIANTING_SERVER_DIR: ${{ github.workspace }}/tianting-server/server
