@@ -511,6 +511,25 @@ final class CountsAndSnapshotsTests: IMTestCase {
         XCTAssertNil(h.im.conversationSnapshot("group:g2"))
     }
 
+    // AC-UI-33-12: any reason, absent or unknown, removes the group; the reason passes through untouched.
+    // AC-UI-33-11: pulled back in, the conversation returns and the snapshot goes.
+    func testRemovedReasonsAndRejoin() async {
+        let h = setup()
+        h.im.connect(token: "t")
+        let c = await h.login("alice", convs: [conv(G), conv("group:g2"), conv("group:g3")])
+        c.receive(event("convRemoved", ["convId": .string(G), "reason": "dissolved"]))
+        c.receive(event("convRemoved", ["convId": "group:g2", "reason": "xyz"]))
+        c.receive(event("convRemoved", ["convId": "group:g3"]))
+        XCTAssertEqual(h.im.conversations(), [])
+        XCTAssertEqual(h.im.conversationSnapshot(G)?.reason, "dissolved")
+        XCTAssertEqual(h.im.conversationSnapshot("group:g2")?.reason, "xyz")
+        XCTAssertNil(h.im.conversationSnapshot("group:g3")?.reason)
+        XCTAssertEqual(h.im.conversationSnapshot("group:g3")?.removed, true)
+        c.receive(event("convAdded", ["conv": conv(G, name: "回来了")]))
+        XCTAssertEqual(h.im.conversations().map(\.name), ["回来了"])
+        XCTAssertNil(h.im.conversationSnapshot(G))
+    }
+
     // G-UI-26
     func testOpenUnknownConversationErrors() async {
         for code in [4033, 4043, 4032] {

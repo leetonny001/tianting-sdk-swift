@@ -74,6 +74,39 @@ final class SocialTests: IMTestCase {
         XCTAssertTrue(h.im.socialLoaded())
     }
 
+    // F-SOC-06 rule 10: the round only starts once `convs` has answered.
+    func testRoundWaitsForConvsAck() async {
+        let h = setup()
+        h.im.connect(token: "t")
+        let c = h.transport.current
+        c.open()
+        c.ack("auth", ["userId": "alice", "serverTime": .int(h.clock.now())])
+        await flush()
+        XCTAssertNotNil(c.last("convs"))
+        XCTAssertEqual(c.frames("socialSync").count, 0)
+        c.ack("convs", ["convs": [], "truncated": false])
+        await flush()
+        XCTAssertEqual(c.frames("socialSync").count, 1)
+    }
+
+    // A round cut off between pages leaves socialVer alone, so the next round repeats from the same place.
+    func testAbortedRoundKeepsVer() async {
+        let (h, c) = await loggedIn()
+        c.ack("socialSync", socialPage(untilVer: 5))
+        await flush()
+        c.receive(event("socialChanged", ["ver": 8]))
+        h.clock.advance(200)
+        await flush()
+        c.ack("socialSync", socialPage(untilVer: 8, full: false, hasMore: true, cursor: "c1", friends: [friend("x", 6)]))
+        await flush()
+        c.drop(1006)
+        await flush()
+        let c2 = await h.reconnect()
+        c2.ack("convs", ["convs": [], "truncated": false])
+        await flush()
+        XCTAssertEqual(c2.last("socialSync")?.data, ["sinceVer": 5, "limit": 500])
+    }
+
     // F-SOC-06 rule 3: restart abandons the round and keeps the sinceVer.
     func testRestartKeepsSinceVer() async {
         let (h, c) = await loggedIn()

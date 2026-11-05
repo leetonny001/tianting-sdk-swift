@@ -40,6 +40,17 @@ final class SyncTests: IMTestCase {
         XCTAssertEqual(h.im.messages(AB).map(\.seq), [1, 2, 3])
     }
 
+    // AC-MSG-02-4
+    func testOutOfOrderDisplaysBySeq() async {
+        let h = setup()
+        h.im.connect(token: "t")
+        let c = await h.login("alice", convs: [conv(AB)])
+        c.receive(msgFrame(msg(AB, 3)))
+        c.receive(msgFrame(msg(AB, 2)))
+        XCTAssertEqual(h.im.messages(AB).map(\.seq), [2, 3])
+        XCTAssertEqual(h.im.conversations()[0].lastMsg?.msgId, "\(AB)#3")
+    }
+
     // F-MSG-04 rule 1
     func testDedupeByMsgId() async {
         let h = setup()
@@ -49,6 +60,13 @@ final class SyncTests: IMTestCase {
         c.receive(msgFrame(msg(AB, 1)))
         XCTAssertEqual(h.im.messages(AB).count, 1)
         XCTAssertEqual(h.im.conversations()[0].unread, 1)
+        // The duplicate changes nothing, so the UI is not told about it either.
+        var notified = 0
+        h.im.on {
+            if case .messages = $0 { notified += 1 }
+        }
+        c.receive(msgFrame(msg(AB, 1)))
+        XCTAssertEqual(notified, 0)
     }
 
     // AC-CONN-01-4, TC-CONN-01-08

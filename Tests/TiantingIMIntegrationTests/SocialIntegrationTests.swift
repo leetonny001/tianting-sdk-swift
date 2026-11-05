@@ -29,7 +29,7 @@ final class SocialIntegrationTests: IntegrationCase {
         XCTAssertEqual(out.displayName, "小B")
         XCTAssertNil(out.profile)
 
-        try await untilTrue("red dot on both devices") {
+        try await untilTrue("red dot on both devices", timeout: 2) {
             b.friendRequests().unseen == 1 && bPc.friendRequests().unseen == 1
         }
         let row = b.friendRequests().items[0]
@@ -52,11 +52,11 @@ final class SocialIntegrationTests: IntegrationCase {
 
         // AC-SOC-04-2
         b.markFriendRequestsSeen()
-        try await untilTrue("red dot cleared on the other device") { bPc.friendRequests().unseen == 0 }
+        try await untilTrue("red dot cleared on the other device", timeout: 2) { bPc.friendRequests().unseen == 0 }
 
         try await b.respondFriend(aid, .accept, remark: "同学A")
         XCTAssertEqual(b.friends().map(\.displayName), ["同学A"])
-        try await untilTrue("friends on both sides") { a.friends().count == 1 && bPc.friends().count == 1 }
+        try await untilTrue("friends on both sides", timeout: 2) { a.friends().count == 1 && bPc.friends().count == 1 }
         XCTAssertEqual(a.relationOf(bid), .friend)
         XCTAssertEqual(bPc.friends()[0].displayName, "同学A")
     }
@@ -339,9 +339,12 @@ final class GroupIntegrationTests: IntegrationCase {
         let removed = try await b.kickFromGroup(groupId, members: [did])
         XCTAssertEqual(removed, [did])
         try await untilTrue("d removed", timeout: 2) { d.conversationSnapshot(convId)?.reason == "removed" }
+        // The group's maxSeq does not move for a removal.
+        let seqAtKick = conv(a, convId)?.maxSeq
         _ = try sendOK(d, convId, "after kick")
         let kickedSend = try await until("4033") { d.messages(convId).first { $0.status == .failed } }
         XCTAssertEqual(kickedSend.error, .code(4033))
+        XCTAssertEqual(conv(a, convId)?.maxSeq, seqAtKick)
 
         // AC-SOC-28-5: member paging, owner first.
         let page = try await a.loadGroupMembers(groupId)
@@ -359,7 +362,7 @@ final class GroupIntegrationTests: IntegrationCase {
         await assertThrowsCode(4030) { _ = try await a.kickFromGroup(groupId, members: [bid]) }
 
         // AC-SOC-23-1
-        let maxSeq = conv(b, convId)?.maxSeq
+        let seqAtLeave = conv(c, convId)?.maxSeq
         try await a.leaveGroup(groupId)
         XCTAssertNil(conv(a, convId))
         XCTAssertEqual(a.conversationSnapshot(convId)?.reason, "left")
@@ -367,12 +370,19 @@ final class GroupIntegrationTests: IntegrationCase {
         await assertThrowsCode(4033) { _ = try await a.getGroupInfo(groupId) }
         let afterLeave = try await c.getGroupInfo(groupId)
         XCTAssertEqual(afterLeave.memberCount, 2)
-        _ = maxSeq
+        XCTAssertEqual(conv(c, convId)?.maxSeq, seqAtLeave)
+        _ = try sendOK(a, convId, "after leave")
+        let leftSend = try await until("4033 after leaving") { a.messages(convId).first { $0.status == .failed } }
+        XCTAssertEqual(leftSend.error, .code(4033))
 
         // AC-SOC-26-1
         try await c.dissolveGroup(groupId)
         XCTAssertEqual(c.conversationSnapshot(convId)?.reason, "dissolved")
         try await untilTrue("b sees dissolved", timeout: 2) { b.conversationSnapshot(convId)?.reason == "dissolved" }
+        // A member offline during the dissolve no longer has it.
+        let later = try await login(did)
+        try await untilTrue("d loaded") { later.socialLoaded() }
+        XCTAssertNil(conv(later, convId))
     }
 
     // FE-143: Error.userId from a real 4035.
@@ -410,6 +420,20 @@ final class GroupIntegrationTests: IntegrationCase {
         } while cursor != nil
         XCTAssertGreaterThan(pages, 1)
         XCTAssertEqual(Set(all).count, 121)
+    }
+
+    // PRD-admin F-ADM-24: removed through the admin API arrives as reason "removed"; the group leaves the list.
+    func testRemovedByAdminCarriesReason() async throws {
+        let (aid, bid) = (uid("a"), uid("b"))
+        let g = try await hostedGroup([aid, bid])
+        let a = try await login(aid)
+        try await untilTrue("sees group") { conv(a, g.convId) != nil }
+        let log = EventLog(a)
+        try await srv.signed("DELETE", "/admin/groups/\(g.groupId)/members", ["members": [aid]])
+        try await untilTrue("convRemoved") { !log.removed.isEmpty }
+        XCTAssertEqual(log.removed[0].0, g.convId)
+        XCTAssertEqual(log.removed[0].1, "removed")
+        XCTAssertNil(conv(a, g.convId))
     }
 
     // AC-SOC-20-10: ten members leave in a second; an online member's groupInfo stays correct and groupChanged stays low.

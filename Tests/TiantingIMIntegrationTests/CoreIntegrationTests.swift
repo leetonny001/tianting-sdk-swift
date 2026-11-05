@@ -35,6 +35,98 @@ final class CoreIntegrationTests: IntegrationCase {
         XCTAssertEqual(conv(bob2, cid)?.unread, 0)
     }
 
+    // AC-MSG-05-1, AC-CONV-02-1: messages arriving while offline; unread on login; all five when opened.
+    func testOfflineMessagesAndUnread() async throws {
+        let (aid, bid) = (uid("alice"), uid("bob"))
+        try await importUsers([aid, bid])
+        let alice = try await login(aid)
+        let cid = c2cConvId(aid, bid)
+        for i in 1...5 { _ = try sendOK(alice, cid, "m\(i)") }
+        try await untilTrue("sent") { alice.messages(cid).filter { $0.status == .sent }.count == 5 }
+        let bob = try await login(bid)
+        try await untilTrue("conv") { conv(bob, cid) != nil }
+        XCTAssertEqual(conv(bob, cid)?.unread, 5)
+        _ = try await bob.loadHistory(cid)
+        XCTAssertEqual(bob.messages(cid).map(\.body.text), ["m1", "m2", "m3", "m4", "m5"])
+    }
+
+    // AC-MSG-05-2: newest 20 first, then pages back to the start, then stops.
+    func testHistoryPaging() async throws {
+        let (aid, bid) = (uid("alice"), uid("bob"))
+        try await importUsers([aid, bid])
+        let alice = try await login(aid)
+        let cid = c2cConvId(aid, bid)
+        for i in 1...100 {
+            _ = try sendOK(alice, cid, "m\(i)")
+            if i % 15 == 0 { try await sleepMs(1100) }  // Rate limit: 20 per second.
+        }
+        try await untilTrue("sent", timeout: 15) { alice.messages(cid).filter { $0.status == .sent }.count == 100 }
+        let bob = try await login(bid)
+        try await untilTrue("conv") { conv(bob, cid) != nil }
+        var more = try await bob.loadHistory(cid)
+        XCTAssertTrue(more)
+        XCTAssertEqual(bob.messages(cid).map(\.seq), (81...100).map { Int64($0) })
+        var pages = 1
+        while more {
+            more = try await bob.loadHistory(cid)
+            pages += 1
+        }
+        XCTAssertEqual(pages, 5)
+        XCTAssertEqual(bob.messages(cid).map(\.seq), (1...100).map { Int64($0) })
+        let again = try await bob.loadHistory(cid)
+        XCTAssertFalse(again)
+    }
+
+    // AC-CONV-01-3: a new context sees the same list.
+    func testSameListFromAnotherDevice() async throws {
+        let (aid, bid) = (uid("alice"), uid("bob"))
+        try await importUsers([aid, bid])
+        let alice = try await login(aid)
+        let cid = c2cConvId(aid, bid)
+        _ = try sendOK(alice, cid, "x")
+        let g = try await hostedGroup([aid, bid])
+        try await untilTrue("both") { conv(alice, cid) != nil && conv(alice, g.convId) != nil }
+        try await sleepMs(300)
+        let other = try await login(aid)
+        try await untilTrue("other device") { other.conversations().count == 2 }
+        XCTAssertEqual(other.conversations().map(\.convId), alice.conversations().map(\.convId))
+    }
+
+    // AC-SYNC-01-1, AC-MSG-02-1: both connections of a user receive it.
+    func testBothConnectionsReceive() async throws {
+        let (aid, bid) = (uid("alice"), uid("bob"))
+        try await importUsers([aid, bid])
+        let web = try await login(aid)
+        let pc = try await login(aid)
+        let bob = try await login(bid)
+        let cid = c2cConvId(aid, bid)
+        _ = try sendOK(bob, cid, "hello")
+        try await untilTrue("both") { web.messages(cid).count == 1 && pc.messages(cid).count == 1 }
+    }
+
+    // AC-GRP-02-1: other members get it, the sender's device does not get a duplicate.
+    // AC-MSG-04-5: five members send twenty each at once, everyone ends with seq 1...100.
+    func testGroupBurstNoGapsNoDuplicates() async throws {
+        let ids = (0..<5).map { _ in uid("m") }
+        let g = try await hostedGroup(ids)
+        var ims: [IMClient] = []
+        for id in ids { ims.append(try await login(id)) }
+        for im in ims { try await untilTrue("sees group") { conv(im, g.convId) != nil } }
+        // Hosted groups may start with tip messages; count on top of them.
+        let base = conv(ims[0], g.convId)?.maxSeq ?? 0
+        for round in 0..<20 {
+            for (i, im) in ims.enumerated() { _ = try sendOK(im, g.convId, "u\(i)-\(round)") }
+        }
+        for im in ims {
+            try await untilTrue("everyone complete", timeout: 10) {
+                im.messages(g.convId).filter { ($0.seq ?? 0) > base && $0.status == .sent }.count == 100
+                    && im.pendingCount() == 0
+            }
+            let seqs = im.messages(g.convId).compactMap(\.seq).filter { $0 > base }
+            XCTAssertEqual(seqs, (1...100).map { base + Int64($0) })
+        }
+    }
+
     // AC-CONV-03-3
     func testSendToUnknownUserPassesCodeThrough() async throws {
         let a = uid("alice")

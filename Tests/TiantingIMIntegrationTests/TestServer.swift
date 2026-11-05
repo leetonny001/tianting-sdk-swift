@@ -10,7 +10,7 @@ final class TestServer: @unchecked Sendable {
     static let adminKey = "sdk-it-admin-key-0123456789abcdef"
     private static let callerId = "sdk-it"
     private static let callerSecret = "sdk-it-caller-secret-0123456789abcdef"
-    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve"]
+    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve", "group.write"]
 
     let wsURL: String
     private let adminBase: String
