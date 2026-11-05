@@ -1295,6 +1295,18 @@
       "tip": {
         "kind": "ownerChanged",
         "actor": "",
+        "targets": [
+          "x"
+        ],
+        "text": ""
+      },
+      "text": "你已成为群主"
+    },
+    {
+      "me": "x",
+      "tip": {
+        "kind": "ownerChanged",
+        "actor": "",
         "targets": [],
         "text": ""
       },

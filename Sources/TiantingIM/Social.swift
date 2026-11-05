@@ -306,7 +306,8 @@ public func tipText(_ tip: TipBody, me: String, nameOf: (String) -> String) -> S
         return you ? "你邀请 \(targets) 加入了群聊" : "\(actor) 邀请 \(targets) 加入了群聊"
     case "ownerChanged":
         if !tip.actor.isEmpty { return "\(spaced)将群主转让给 \(targets)" }
-        return tip.targets.isEmpty ? "群主已退出群聊" : "\(targets) 已成为群主"
+        if tip.targets.isEmpty { return "群主已退出群聊" }
+        return targets == "你" ? "你已成为群主" : "\(targets) 已成为群主"
     case "adminSet":
         return "\(spaced)将 \(targets) 设为管理员"
     case "adminUnset":
