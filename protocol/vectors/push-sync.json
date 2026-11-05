@@ -1,0 +1,1037 @@
+{
+  "description": "推送补拉共享行为用例（PRD-live 4.3、4.8 节，四套 SDK 都跑）。按顺序执行 steps，每步之后断言 expect。expect 里没写的 requests、delivered、pushSynced 表示这一步必须为空；没写 cursor 表示不检查。",
+  "format": {
+    "ops": {
+      "subscribe/unsubscribe": "注册或取消 id 对应的订阅者。subscribe 之后不自动进入调度点，由 tick 显式推进，这样同一调度点可以注册多个",
+      "tick": "下一个调度点（TS 微任务；其他端的等价调度）。网络事件和定时器（connect、disconnect、live、ack、ackError、requestTimeout、advance）处理之前先过一次；除 subscribe 外每步结束也隐含一次",
+      "connect": "auth 成功，ack 的 serverTime 给定。userId 变化时先按 logout 处理",
+      "disconnect": "连接断开（不是退出登录）",
+      "logout": "退出登录",
+      "live": "依次收到实时 push 帧",
+      "ack": "当前 pushSync 的应答。没有进行中的请求时必须忽略",
+      "ackError": "当前 pushSync 的错误应答",
+      "requestTimeout": "当前 pushSync 超过 SDK 的请求超时，算失败（C9）。之后迟到的 ack 必须忽略",
+      "restart": "进程退出后新建实例：内存全丢，订阅者也没了，只有持久化存储还在（只用于 persistence=true 的用例）",
+      "advance": "假时钟前进 ms 毫秒，触发期间到期的定时器"
+    },
+    "seqRange": "{seqRange:[a,b], ts, idPrefix?} 展开为 pushId=<idPrefix 默认 p><n>、pushSeq=n 的多个帧；expect.delivered 里同样展开，带 replayed",
+    "delivered": "每个当前订阅者都按此顺序收到；deliveredTo 按订阅者分别给出",
+    "requests": "这一步发出的 pushSync。afterSeq 请求一律带 limit=defaults.limit",
+    "config": "persistence=true 的用例只有带持久化的 SDK 跑；sdk-ts 跳过。stored 是预置的持久化内容。config 里的 stashMax、noSeqQueueMax、seenMax 覆盖 defaults",
+    "unsubscribeOnDeliver": "{pushId, id}：这一步交付到该 pushId 时，id 对应的订阅者在回调内退订",
+    "delivered 的可选字段": "帧里有 target、roomId 时，expect 写了就要比对"
+  },
+  "defaults": {
+    "limit": 100,
+    "stashMax": 200,
+    "noSeqQueueMax": 500,
+    "gapWaitMs": 500,
+    "stashFlushMs": 5000,
+    "seenMax": 2000,
+    "backoffMs": [
+      1000,
+      2000,
+      4000,
+      8000,
+      16000,
+      30000
+    ]
+  },
+  "cases": [
+    {"name": "无订阅者，收件箱 1000 条：不发 pushSync，订阅后才翻页", "rule": "C12、C6、C7", "acs": ["AC-PUSH-03-25", "AC-PUSH-03-15", "AC-PUSH-08-8"],
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"cursor": 0}},
+        {"op": "live", "frames": [{"pushId": "p1000", "pushSeq": 1000, "ts": 500}]},
+        {"op": "advance", "ms": 60000},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "requests": [{"afterSeq": 100}], "cursor": 100}},
+        {"op": "ack", "pushes": [{"seqRange": [101, 200], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [101, 200], "replayed": true}], "requests": [{"afterSeq": 200}], "cursor": 200}},
+        {"op": "ack", "pushes": [{"seqRange": [201, 300], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [201, 300], "replayed": true}], "requests": [{"afterSeq": 300}], "cursor": 300}},
+        {"op": "ack", "pushes": [{"seqRange": [301, 400], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [301, 400], "replayed": true}], "requests": [{"afterSeq": 400}], "cursor": 400}},
+        {"op": "ack", "pushes": [{"seqRange": [401, 500], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [401, 500], "replayed": true}], "requests": [{"afterSeq": 500}], "cursor": 500}},
+        {"op": "ack", "pushes": [{"seqRange": [501, 600], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [501, 600], "replayed": true}], "requests": [{"afterSeq": 600}], "cursor": 600}},
+        {"op": "ack", "pushes": [{"seqRange": [601, 700], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [601, 700], "replayed": true}], "requests": [{"afterSeq": 700}], "cursor": 700}},
+        {"op": "ack", "pushes": [{"seqRange": [701, 800], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [701, 800], "replayed": true}], "requests": [{"afterSeq": 800}], "cursor": 800}},
+        {"op": "ack", "pushes": [{"seqRange": [801, 900], "ts": 500}], "hasMore": true, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [801, 900], "replayed": true}], "requests": [{"afterSeq": 900}], "cursor": 900}},
+        {"op": "ack", "pushes": [{"seqRange": [901, 1000], "ts": 500}], "hasMore": false, "latestSeq": 1000, "expect": {"delivered": [{"seqRange": [901, 1000], "replayed": true}], "cursor": 1000, "pushSynced": [1000]}},
+        {"op": "advance", "ms": 60000}
+      ]
+    },
+    {"name": "无订阅者时到达 501 条实时帧：一条都不留，订阅后从收件箱补齐，只交付一次", "rule": "C12", "acs": ["AC-PUSH-08-4", "AC-PUSH-08-5"],
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"cursor": 0}},
+        {"op": "live", "frames": [{"seqRange": [1, 501], "ts": 2000}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 2000}], "hasMore": true, "latestSeq": 501, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": false}], "requests": [{"afterSeq": 100}], "cursor": 100}},
+        {"op": "ack", "pushes": [{"seqRange": [101, 200], "ts": 2000}], "hasMore": true, "latestSeq": 501, "expect": {"delivered": [{"seqRange": [101, 200], "replayed": false}], "requests": [{"afterSeq": 200}], "cursor": 200}},
+        {"op": "ack", "pushes": [{"seqRange": [201, 300], "ts": 2000}], "hasMore": true, "latestSeq": 501, "expect": {"delivered": [{"seqRange": [201, 300], "replayed": false}], "requests": [{"afterSeq": 300}], "cursor": 300}},
+        {"op": "ack", "pushes": [{"seqRange": [301, 400], "ts": 2000}], "hasMore": true, "latestSeq": 501, "expect": {"delivered": [{"seqRange": [301, 400], "replayed": false}], "requests": [{"afterSeq": 400}], "cursor": 400}},
+        {"op": "ack", "pushes": [{"seqRange": [401, 500], "ts": 2000}], "hasMore": true, "latestSeq": 501, "expect": {"delivered": [{"seqRange": [401, 500], "replayed": false}], "requests": [{"afterSeq": 500}], "cursor": 500}},
+        {"op": "ack", "pushes": [{"pushId": "p501", "pushSeq": 501, "ts": 2000}], "hasMore": false, "latestSeq": 501, "expect": {"delivered": [{"pushId": "p501", "replayed": false}], "cursor": 501, "pushSynced": [501]}}
+      ]
+    },
+    {"name": "备份恢复，游标大于最新：重拉，只交付新的，游标回到 latestSeq", "rule": "C8", "acs": ["AC-PUSH-03-10", "AC-PUSH-08-8"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": false, "latestSeq": 100, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "cursor": 100, "pushSynced": [100]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 55, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 50], "ts": 500}, {"seqRange": [51, 55], "ts": 2000, "idPrefix": "n"}], "hasMore": false, "latestSeq": 55, "expect": {"delivered": [{"seqRange": [51, 55], "replayed": false, "idPrefix": "n"}], "cursor": 55, "pushSynced": [55]}},
+        {"op": "live", "frames": [{"pushId": "n56", "pushSeq": 56, "ts": 2000}], "expect": {"delivered": [{"pushId": "n56", "replayed": false}], "cursor": 56}}
+      ]
+    },
+    {"name": "翻页中实时帧到达：200 不抢先，只交付一次", "rule": "C2、C6、C7", "acs": ["AC-PUSH-03-26"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p200", "pushSeq": 200, "ts": 2000}]},
+        {"op": "advance", "ms": 499},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 141], "ts": 2000}], "hasMore": true, "latestSeq": 200, "expect": {"delivered": [{"seqRange": [42, 141], "replayed": false}], "requests": [{"afterSeq": 141}], "cursor": 141}},
+        {"op": "ack", "pushes": [{"seqRange": [142, 200], "ts": 2000}], "hasMore": false, "latestSeq": 200, "expect": {"delivered": [{"seqRange": [142, 200], "replayed": false}], "cursor": 200, "pushSynced": [200]}}
+      ]
+    },
+    {"name": "读快照后才提交的帧先于 ack 到达：42、43 之后交付 44", "rule": "C7、C11", "acs": ["AC-PUSH-03-26"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "同实例 u1 退出、u2 登录，同一 pushId 各交付一次；内存 SDK 回到 u1 时重新回放", "rule": "账号隔离", "acs": ["AC-PUSH-07-3", "AC-PUSH-07-5", "AC-PUSH-07-6"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"pushId": "shared", "pushSeq": 5, "ts": 2000}], "hasMore": false, "latestSeq": 5, "expect": {"delivered": [{"pushId": "shared", "replayed": false}], "cursor": 5, "pushSynced": [5]}},
+        {"op": "live", "frames": [{"pushId": "p9", "pushSeq": 9, "ts": 2000}]},
+        {"op": "logout", "expect": {"cursor": null}},
+        {"op": "connect", "userId": "u2", "serverTime": 3000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"pushId": "shared", "pushSeq": 3, "ts": 2000}], "hasMore": false, "latestSeq": 3, "expect": {"delivered": [{"pushId": "shared", "replayed": true}], "cursor": 3, "pushSynced": [3]}},
+        {"op": "logout", "expect": {"cursor": null}},
+        {"op": "connect", "userId": "u1", "serverTime": 4000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"pushId": "shared", "pushSeq": 5, "ts": 2000}], "hasMore": false, "latestSeq": 5, "expect": {"delivered": [{"pushId": "shared", "replayed": true}], "cursor": 5, "pushSynced": [5]}}
+      ]
+    },
+    {"name": "pending 重播：在线实例按 pushId 丢弃，新实例算旧推送", "rule": "C4、4.4 节", "acs": ["AC-PUSH-03-11"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p9", "ts": 1500, "target": "all"}], "expect": {"delivered": [{"pushId": "p9", "replayed": false}], "cursor": 41}},
+        {"op": "live", "frames": [{"pushId": "p9", "ts": 1500, "target": "all"}], "expect": {"cursor": 41}}
+      ]
+    },
+    {"name": "pending 重播到崩溃后新启动的实例：replayed=true", "rule": "4.5 节规则 4", "acs": ["AC-PUSH-08-1"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1600, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"cursor": 0, "pushSynced": [0]}},
+        {"op": "live", "frames": [{"pushId": "p9", "ts": 1500, "target": "all"}], "expect": {"delivered": [{"pushId": "p9", "replayed": true}], "cursor": 0}}
+      ]
+    },
+    {"name": "连接中途断开：定时器、单飞、退避都取消，暂存保留到重连后合并", "rule": "C9", "acs": ["AC-PUSH-03-27"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 91, "expect": {"cursor": 91, "pushSynced": [91]}},
+        {"op": "live", "frames": [{"pushId": "p200", "pushSeq": 200, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 500},
+        {"op": "disconnect"},
+        {"op": "advance", "ms": 10000, "expect": {"cursor": 91}},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "ack", "pushes": [{"seqRange": [92, 191], "ts": 2000}], "hasMore": true, "latestSeq": 199, "expect": {"delivered": [{"seqRange": [92, 191], "replayed": false}], "requests": [{"afterSeq": 191}], "cursor": 191}},
+        {"op": "ack", "pushes": [{"seqRange": [192, 199], "ts": 2000}], "hasMore": false, "latestSeq": 199, "expect": {"delivered": [{"seqRange": [192, 199], "replayed": false}, {"pushId": "p200", "replayed": false}], "cursor": 200, "pushSynced": [200]}}
+      ]
+    },
+    {"name": "断开后立即重连：旧的退避和 5 秒定时器都不再触发", "rule": "C9", "acs": ["AC-PUSH-03-27", "AC-PUSH-03-33"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 91, "expect": {"cursor": 91, "pushSynced": [91]}},
+        {"op": "live", "frames": [{"pushId": "p200", "pushSeq": 200, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 500},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 91}]}},
+        {"op": "advance", "ms": 6000, "expect": {"cursor": 91}},
+        {"op": "ack", "pushes": [{"seqRange": [92, 199], "ts": 2000}], "hasMore": false, "latestSeq": 199, "expect": {"delivered": [{"seqRange": [92, 199], "replayed": false}, {"pushId": "p200", "replayed": false}], "cursor": 200, "pushSynced": [200]}},
+        {"op": "advance", "ms": 60000}
+      ]
+    },
+    {"name": "请求进行中断开：重连立即再发，迟到的旧 ack 不生效", "rule": "C5、C9", "acs": ["AC-PUSH-03-27"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "disconnect"},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"cursor": 41}},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "过期空洞：页内和尾部的空洞不会让游标停住", "rule": "C6、C7", "acs": ["AC-PUSH-03-9"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 40, "expect": {"cursor": 40, "pushSynced": [40]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 40}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 43, "pushSynced": [43]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}], "expect": {"delivered": [{"pushId": "p44", "replayed": false}], "cursor": 44}}
+      ]
+    },
+    {"name": "尾部全部过期，结果为空：游标前进到 latestSeq，不交付", "rule": "C7", "acs": ["AC-PUSH-03-9"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 43, "expect": {"cursor": 43, "pushSynced": [43]}}
+      ]
+    },
+    {"name": "全部清理后再推送：序号继续递增", "rule": "C1、C7", "acs": ["AC-PUSH-03-13"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 5, "expect": {"cursor": 5, "pushSynced": [5]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 5}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 5, "expect": {"cursor": 5, "pushSynced": [5]}},
+        {"op": "live", "frames": [{"pushId": "p6", "pushSeq": 6, "ts": 2000}], "expect": {"delivered": [{"pushId": "p6", "replayed": false}], "cursor": 6}}
+      ]
+    },
+    {"name": "新设备遇到已清理的收件箱：空结果也建立游标", "rule": "C7", "acs": ["AC-PUSH-03-9"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 5, "expect": {"cursor": 5, "pushSynced": [5]}}
+      ]
+    },
+    {"name": "恢复后序号没长过旧游标、也没有新推送：重拉全部见过，游标回到恢复点", "rule": "C8", "acs": ["AC-PUSH-03-10"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": false, "latestSeq": 100, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "cursor": 100, "pushSynced": [100]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 50, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 50], "ts": 500}], "hasMore": false, "latestSeq": 50, "expect": {"cursor": 50, "pushSynced": [50]}},
+        {"op": "live", "frames": [{"pushId": "n51", "pushSeq": 51, "ts": 2000}], "expect": {"delivered": [{"pushId": "n51", "replayed": false}], "cursor": 51}}
+      ]
+    },
+    {"name": "恢复后序号长过旧游标（已接受风险 ④）：不触发 C8，中间的推送这台设备补不到", "rule": "4.6 节风险 ④", "acs": ["AC-PUSH-03-10"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": false, "latestSeq": 100, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "cursor": 100, "pushSynced": [100]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}]}},
+        {"op": "ack", "pushes": [{"seqRange": [101, 110], "ts": 2000, "idPrefix": "n"}], "hasMore": false, "latestSeq": 110, "expect": {"delivered": [{"seqRange": [101, 110], "replayed": false, "idPrefix": "n"}], "cursor": 110, "pushSynced": [110]}}
+      ]
+    },
+    {"name": "无 pushSeq 的帧：无订阅者时进有界队列，溢出丢最旧，丢了补不回", "rule": "C4", "acs": ["AC-PUSH-08-5", "AC-PUSH-03-11"], "config": {"noSeqQueueMax": 3},
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"cursor": 0}},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}, {"pushId": "a2", "ts": 2000, "target": "all"}, {"pushId": "a3", "ts": 2000, "target": "all"}, {"pushId": "a4", "ts": 2000, "target": "all"}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"delivered": [{"pushId": "a2", "replayed": false}, {"pushId": "a3", "replayed": false}, {"pushId": "a4", "replayed": false}], "requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"cursor": 0, "pushSynced": [0]}}
+      ]
+    },
+    {"name": "同一调度点注册的订阅者都收到积压，之后注册的只收之后的", "rule": "4.8 节", "acs": ["AC-PUSH-08-6", "AC-PUSH-08-11"],
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "subscribe", "id": "b"},
+        {"op": "tick", "expect": {"deliveredTo": {"a": [{"pushId": "a1", "replayed": false}], "b": [{"pushId": "a1", "replayed": false}]}, "requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"pushSynced": [0]}},
+        {"op": "subscribe", "id": "c"},
+        {"op": "tick"},
+        {"op": "live", "frames": [{"pushId": "p1", "pushSeq": 1, "ts": 2000}], "expect": {"deliveredTo": {"a": [{"pushId": "p1", "replayed": false}], "b": [{"pushId": "p1", "replayed": false}], "c": [{"pushId": "p1", "replayed": false}]}, "cursor": 1}}
+      ]
+    },
+    {"name": "暂存区满：清空后只留当前帧，到点补拉，全部补回", "rule": "C2", "acs": ["AC-PUSH-03-29"], "config": {"stashMax": 3},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 10, "expect": {"cursor": 10, "pushSynced": [10]}},
+        {"op": "live", "frames": [{"pushId": "p20", "pushSeq": 20, "ts": 2000}, {"pushId": "p21", "pushSeq": 21, "ts": 2000}, {"pushId": "p22", "pushSeq": 22, "ts": 2000}]},
+        {"op": "live", "frames": [{"pushId": "p23", "pushSeq": 23, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 10}]}},
+        {"op": "ack", "pushes": [{"seqRange": [11, 23], "ts": 2000}], "hasMore": false, "latestSeq": 23, "expect": {"delivered": [{"seqRange": [11, 23], "replayed": false}], "cursor": 23, "pushSynced": [23]}}
+      ]
+    },
+    {"name": "暂存区满时确实只留当前帧：5 秒到期只交付这一帧", "rule": "C2、C9", "acs": ["AC-PUSH-03-29", "AC-PUSH-03-33"], "config": {"stashMax": 3},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 10, "expect": {"cursor": 10, "pushSynced": [10]}},
+        {"op": "live", "frames": [{"pushId": "p20", "pushSeq": 20, "ts": 2000}, {"pushId": "p21", "pushSeq": 21, "ts": 2000}, {"pushId": "p22", "pushSeq": 22, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 10}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "live", "frames": [{"pushId": "p23", "pushSeq": 23, "ts": 2000}]},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 10}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 10}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1999, "expect": {"cursor": 10}},
+        {"op": "advance", "ms": 1, "expect": {"delivered": [{"pushId": "p23", "replayed": false}], "cursor": 10}},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 10}]}},
+        {"op": "ack", "pushes": [{"seqRange": [11, 23], "ts": 2000}], "hasMore": false, "latestSeq": 23, "expect": {"delivered": [{"seqRange": [11, 22], "replayed": false}], "cursor": 23, "pushSynced": [23]}}
+      ]
+    },
+    {"name": "500ms 内缺口接上：不发 pushSync", "rule": "C2、C11", "acs": ["AC-PUSH-03-18"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p43", "pushSeq": 43, "ts": 2000}]},
+        {"op": "advance", "ms": 400},
+        {"op": "live", "frames": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}], "cursor": 43}},
+        {"op": "advance", "ms": 1000}
+      ]
+    },
+    {"name": "缺口等 500ms 后补拉，业务按序收到", "rule": "C2", "acs": ["AC-PUSH-03-4"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}, {"pushId": "p44", "pushSeq": 44, "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "单飞：进行中不并发，结束后还有缺口再等 500ms", "rule": "C5、C11", "acs": ["AC-PUSH-03-19"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "live", "frames": [{"pushId": "p46", "pushSeq": 46, "ts": 2000}]},
+        {"op": "advance", "ms": 1000},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 44}]}},
+        {"op": "ack", "pushes": [{"pushId": "p45", "pushSeq": 45, "ts": 2000}, {"pushId": "p46", "pushSeq": 46, "ts": 2000}], "hasMore": false, "latestSeq": 46, "expect": {"delivered": [{"pushId": "p45", "replayed": false}, {"pushId": "p46", "replayed": false}], "cursor": 46, "pushSynced": [46]}}
+      ]
+    },
+    {"name": "C2 在请求进行中不启动 500ms 定时器：应答后才从头计时", "rule": "C2、C11", "acs": ["AC-PUSH-03-19"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "live", "frames": [{"pushId": "p46", "pushSeq": 46, "ts": 2000}]},
+        {"op": "advance", "ms": 250},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}},
+        {"op": "advance", "ms": 250},
+        {"op": "advance", "ms": 249},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 44}]}}
+      ]
+    },
+    {"name": "C2 在退避时不启动 500ms 定时器：只有退避到期发一次", "rule": "C2、C9", "acs": ["AC-PUSH-03-19", "AC-PUSH-03-30"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "live", "frames": [{"pushId": "p46", "pushSeq": 46, "ts": 2000}]},
+        {"op": "advance", "ms": 999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}}
+      ]
+    },
+    {"name": "请求进行中实时帧接上：直接交付，pushSynced 带已交付的最大值", "rule": "C1、C3、C7", "acs": ["AC-PUSH-06-5"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "live", "frames": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 42}},
+        {"op": "live", "frames": [{"pushId": "p43", "pushSeq": 43, "ts": 2000}], "expect": {"delivered": [{"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}], "cursor": 44}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "服务端未开启：4001 静默，不重试，下次连接再发", "rule": "F-PUSH-01", "acs": ["AC-PUSH-01-4"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ackError", "code": 4001},
+        {"op": "advance", "ms": 120000},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}}
+      ]
+    },
+    {"name": "4001 之后这次连接不再发：缺口定时器和退订再订阅都不发，实时帧照常交付", "rule": "C9、F-PUSH-01", "acs": ["AC-PUSH-01-4"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ackError", "code": 4001},
+        {"op": "live", "frames": [{"pushId": "p1", "pushSeq": 1, "ts": 2000}], "expect": {"delivered": [{"pushId": "p1", "replayed": false}], "cursor": 1}},
+        {"op": "live", "frames": [{"pushId": "p5", "pushSeq": 5, "ts": 2000}]},
+        {"op": "advance", "ms": 60000},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "advance", "ms": 60000},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 1}]}},
+        {"op": "ack", "pushes": [{"seqRange": [2, 5], "ts": 2000}], "hasMore": false, "latestSeq": 5, "expect": {"delivered": [{"seqRange": [2, 5], "replayed": false}], "cursor": 5, "pushSynced": [5]}},
+        {"op": "live", "frames": [{"pushId": "p8", "pushSeq": 8, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 5}]}}
+      ]
+    },
+    {"name": "订阅者全退出：停止补拉、丢弃迟到的页、清暂存；再订阅后重新开始", "rule": "C12", "acs": ["AC-PUSH-03-28"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"cursor": 41}},
+        {"op": "advance", "ms": 10000},
+        {"op": "live", "frames": [{"pushId": "p45", "pushSeq": 45, "ts": 2000}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 45], "ts": 2000}], "hasMore": false, "latestSeq": 45, "expect": {"delivered": [{"seqRange": [42, 45], "replayed": false}], "cursor": 45, "pushSynced": [45]}}
+      ]
+    },
+    {"name": "退订取消退避：再订阅立即发一次，旧退避不触发，退避次数清零", "rule": "C12、C9", "acs": ["AC-PUSH-03-28"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}},
+        {"op": "advance", "ms": 60000}
+      ]
+    },
+    {"name": "退订取消 500ms 定时器：再订阅不会多发", "rule": "C12", "acs": ["AC-PUSH-03-28"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 250},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "advance", "ms": 250},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}], "cursor": 43, "pushSynced": [43]}},
+        {"op": "advance", "ms": 60000}
+      ]
+    },
+    {"name": "退订清暂存：再订阅后之前暂存的帧不会再出现，靠收件箱", "rule": "C12", "acs": ["AC-PUSH-03-28"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}], "cursor": 43, "pushSynced": [43]}}
+      ]
+    },
+    {"name": "退订后立刻再订阅，请求还在进行中：不再发第二个，应答正常处理", "rule": "C5、C12", "acs": ["AC-PUSH-03-28", "AC-PUSH-03-19"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "pushStart=latest：只取最新序号，不回放；之后按游标", "rule": "C10", "acs": ["AC-PUSH-03-17"], "config": {"pushStart": "latest"},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"fromLatest": true}], "cursor": null}},
+        {"op": "live", "frames": [{"pushId": "p8", "pushSeq": 8, "ts": 2000}]},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 7, "expect": {"cursor": 8, "delivered": [{"pushId": "p8", "replayed": false}], "pushSynced": [8]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 8}]}}
+      ]
+    },
+    {"name": "pushStart=latest 且已有游标（原生）：按游标", "rule": "C10", "acs": ["AC-PUSH-03-17"], "config": {"pushStart": "latest", "persistence": true, "stored": {"u1": {"cursor": 41}}},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}], "cursor": 41}}
+      ]
+    },
+    {"name": "原生：退出再登录同一账号，游标和见过都还在，不回放", "rule": "4.9 节", "acs": ["AC-PUSH-03-16", "AC-PUSH-07-6"], "config": {"persistence": true, "stored": {"u1": {"cursor": 41, "seen": [{"seqRange": [1, 41], "ts": 2000}]}}},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}], "cursor": 41}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "logout"},
+        {"op": "connect", "userId": "u1", "serverTime": 5000, "expect": {"requests": [{"afterSeq": 41}], "cursor": 41}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}}
+      ]
+    },
+    {"name": "原生：换号后各用各的游标，u1 回来不重放", "rule": "4.9 节、账号隔离", "acs": ["AC-PUSH-07-3", "AC-PUSH-07-6"], "config": {"persistence": true},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"pushId": "shared", "pushSeq": 5, "ts": 2000}], "hasMore": false, "latestSeq": 5, "expect": {"delivered": [{"pushId": "shared", "replayed": false}], "cursor": 5, "pushSynced": [5]}},
+        {"op": "connect", "userId": "u2", "serverTime": 3000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"pushId": "shared", "pushSeq": 3, "ts": 2000}], "hasMore": false, "latestSeq": 3, "expect": {"delivered": [{"pushId": "shared", "replayed": true}], "cursor": 3, "pushSynced": [3]}},
+        {"op": "connect", "userId": "u1", "serverTime": 4000, "expect": {"requests": [{"afterSeq": 5}], "cursor": 5}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 5, "expect": {"cursor": 5, "pushSynced": [5]}}
+      ]
+    },
+    {"name": "T0 跨重连不变：闪断期间的推送 replayed=false", "rule": "4.5 节规则 4", "acs": ["AC-PUSH-08-1"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"pushId": "p1", "pushSeq": 1, "ts": 500}, {"pushId": "p2", "pushSeq": 2, "ts": 1500}], "hasMore": false, "latestSeq": 2, "expect": {"delivered": [{"pushId": "p1", "replayed": true}, {"pushId": "p2", "replayed": false}], "cursor": 2, "pushSynced": [2]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 3000, "expect": {"requests": [{"afterSeq": 2}]}},
+        {"op": "ack", "pushes": [{"pushId": "p3", "pushSeq": 3, "ts": 2500}], "hasMore": false, "latestSeq": 3, "expect": {"delivered": [{"pushId": "p3", "replayed": false}], "cursor": 3, "pushSynced": [3]}}
+      ]
+    },
+    {"name": "补拉持续失败：5 秒后暂存先交付，游标不动；恢复后靠见过去重", "rule": "C9", "acs": ["AC-PUSH-03-20"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"delivered": [{"pushId": "p44", "replayed": false}], "cursor": 41}},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "退订期间无 pushSeq 的帧进队列，再订阅后先交付，再补拉", "rule": "C4、C12", "acs": ["AC-PUSH-08-5", "AC-PUSH-03-11"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"delivered": [{"pushId": "a1", "replayed": false}], "requests": [{"afterSeq": 41}], "cursor": 41}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}}
+      ]
+    },
+    {"name": "游标之内的实时帧：只看 pushId", "rule": "C3", "acs": ["AC-PUSH-06-5"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 5, "expect": {"cursor": 5, "pushSynced": [5]}},
+        {"op": "live", "frames": [{"pushId": "x3", "pushSeq": 3, "ts": 2000}], "expect": {"delivered": [{"pushId": "x3", "replayed": false}], "cursor": 5}},
+        {"op": "live", "frames": [{"pushId": "x3", "pushSeq": 3, "ts": 2000}], "expect": {"cursor": 5}}
+      ]
+    },
+    {"name": "同一 pushId 先实时后补拉、先补拉后实时：都只交付一次", "rule": "C1、C3", "acs": ["AC-PUSH-06-5"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 42}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 42}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p43", "replayed": false}], "cursor": 43, "pushSynced": [43]}},
+        {"op": "live", "frames": [{"pushId": "p43", "pushSeq": 43, "ts": 2000}], "expect": {"cursor": 43}}
+      ]
+    },
+    {"name": "退避序列 1、2、4、8、16、30、30 秒，封顶 30 秒", "rule": "C9", "acs": ["AC-PUSH-03-30"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 999, "expect": {"cursor": 41}},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 3999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 7999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 15999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 29999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 29999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000}
+      ]
+    },
+    {"name": "成功后退避清零：下一次失败从 1 秒开始", "rule": "C9", "acs": ["AC-PUSH-03-30"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}},
+        {"op": "live", "frames": [{"pushId": "p46", "pushSeq": 46, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 44}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 44}]}}
+      ]
+    },
+    {"name": "断开后退避清零：重连后第一次失败从 1 秒开始", "rule": "C9", "acs": ["AC-PUSH-03-30"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}}
+      ]
+    },
+    {"name": "错误分类：4000、4290、5000 和请求超时都按退避重试，只有 4001 不重试", "rule": "C9", "acs": ["AC-PUSH-03-30"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 4000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 4290},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "requestTimeout"},
+        {"op": "advance", "ms": 3999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "请求超时后迟到的 ack 被忽略，单飞不被卡住", "rule": "C5、C9", "acs": ["AC-PUSH-03-30", "AC-PUSH-03-19"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "requestTimeout"},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"cursor": 41}},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"seqRange": [42, 44], "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "hasMore=true 但页为空：按失败处理，不原地死循环", "rule": "C6、C9", "acs": ["AC-PUSH-03-35"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [], "hasMore": true, "latestSeq": 50, "expect": {"cursor": 41}},
+        {"op": "advance", "ms": 999},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 41}]}}
+      ]
+    },
+    {"name": "去重集合按交付先后淘汰，命中不刷新", "rule": "4.4 节", "acs": ["AC-PUSH-06-18"], "config": {"seenMax": 2},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"cursor": 0, "pushSynced": [0]}},
+        {"op": "live", "frames": [{"pushId": "a", "pushSeq": 1, "ts": 2000}], "expect": {"delivered": [{"pushId": "a", "replayed": false}]}},
+        {"op": "live", "frames": [{"pushId": "b", "pushSeq": 2, "ts": 2000}], "expect": {"delivered": [{"pushId": "b", "replayed": false}]}},
+        {"op": "live", "frames": [{"pushId": "a", "pushSeq": 1, "ts": 2000}], "expect": {"cursor": 2}},
+        {"op": "live", "frames": [{"pushId": "c", "pushSeq": 3, "ts": 2000}], "expect": {"delivered": [{"pushId": "c", "replayed": false}], "cursor": 3}},
+        {"op": "live", "frames": [{"pushId": "b", "pushSeq": 2, "ts": 2000}], "expect": {"cursor": 3}},
+        {"op": "live", "frames": [{"pushId": "a", "pushSeq": 1, "ts": 2000}], "expect": {"delivered": [{"pushId": "a", "replayed": false}], "cursor": 3}}
+      ]
+    },
+    {"name": "默认上限 2000：第 2001 条把最早的挤出去", "rule": "4.4 节", "acs": ["AC-PUSH-06-18"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": false}], "requests": [{"afterSeq": 100}], "cursor": 100}},
+        {"op": "ack", "pushes": [{"seqRange": [101, 200], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [101, 200], "replayed": false}], "requests": [{"afterSeq": 200}], "cursor": 200}},
+        {"op": "ack", "pushes": [{"seqRange": [201, 300], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [201, 300], "replayed": false}], "requests": [{"afterSeq": 300}], "cursor": 300}},
+        {"op": "ack", "pushes": [{"seqRange": [301, 400], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [301, 400], "replayed": false}], "requests": [{"afterSeq": 400}], "cursor": 400}},
+        {"op": "ack", "pushes": [{"seqRange": [401, 500], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [401, 500], "replayed": false}], "requests": [{"afterSeq": 500}], "cursor": 500}},
+        {"op": "ack", "pushes": [{"seqRange": [501, 600], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [501, 600], "replayed": false}], "requests": [{"afterSeq": 600}], "cursor": 600}},
+        {"op": "ack", "pushes": [{"seqRange": [601, 700], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [601, 700], "replayed": false}], "requests": [{"afterSeq": 700}], "cursor": 700}},
+        {"op": "ack", "pushes": [{"seqRange": [701, 800], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [701, 800], "replayed": false}], "requests": [{"afterSeq": 800}], "cursor": 800}},
+        {"op": "ack", "pushes": [{"seqRange": [801, 900], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [801, 900], "replayed": false}], "requests": [{"afterSeq": 900}], "cursor": 900}},
+        {"op": "ack", "pushes": [{"seqRange": [901, 1000], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [901, 1000], "replayed": false}], "requests": [{"afterSeq": 1000}], "cursor": 1000}},
+        {"op": "ack", "pushes": [{"seqRange": [1001, 1100], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1001, 1100], "replayed": false}], "requests": [{"afterSeq": 1100}], "cursor": 1100}},
+        {"op": "ack", "pushes": [{"seqRange": [1101, 1200], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1101, 1200], "replayed": false}], "requests": [{"afterSeq": 1200}], "cursor": 1200}},
+        {"op": "ack", "pushes": [{"seqRange": [1201, 1300], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1201, 1300], "replayed": false}], "requests": [{"afterSeq": 1300}], "cursor": 1300}},
+        {"op": "ack", "pushes": [{"seqRange": [1301, 1400], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1301, 1400], "replayed": false}], "requests": [{"afterSeq": 1400}], "cursor": 1400}},
+        {"op": "ack", "pushes": [{"seqRange": [1401, 1500], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1401, 1500], "replayed": false}], "requests": [{"afterSeq": 1500}], "cursor": 1500}},
+        {"op": "ack", "pushes": [{"seqRange": [1501, 1600], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1501, 1600], "replayed": false}], "requests": [{"afterSeq": 1600}], "cursor": 1600}},
+        {"op": "ack", "pushes": [{"seqRange": [1601, 1700], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1601, 1700], "replayed": false}], "requests": [{"afterSeq": 1700}], "cursor": 1700}},
+        {"op": "ack", "pushes": [{"seqRange": [1701, 1800], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1701, 1800], "replayed": false}], "requests": [{"afterSeq": 1800}], "cursor": 1800}},
+        {"op": "ack", "pushes": [{"seqRange": [1801, 1900], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1801, 1900], "replayed": false}], "requests": [{"afterSeq": 1900}], "cursor": 1900}},
+        {"op": "ack", "pushes": [{"seqRange": [1901, 2000], "ts": 2000}], "hasMore": true, "latestSeq": 2001, "expect": {"delivered": [{"seqRange": [1901, 2000], "replayed": false}], "requests": [{"afterSeq": 2000}], "cursor": 2000}},
+        {"op": "ack", "pushes": [{"pushId": "p2001", "pushSeq": 2001, "ts": 2000}], "hasMore": false, "latestSeq": 2001, "expect": {"delivered": [{"pushId": "p2001", "replayed": false}], "cursor": 2001, "pushSynced": [2001]}},
+        {"op": "live", "frames": [{"pushId": "p2", "pushSeq": 2, "ts": 2000}], "expect": {"cursor": 2001}},
+        {"op": "live", "frames": [{"pushId": "p1", "pushSeq": 1, "ts": 2000}], "expect": {"delivered": [{"pushId": "p1", "replayed": false}], "cursor": 2001}}
+      ]
+    },
+    {"name": "C6 先 C11 再取下一页：afterSeq 含接上的暂存帧", "rule": "C6、C11", "acs": ["AC-PUSH-03-15"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p101", "pushSeq": 101, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 100], "ts": 2000}], "hasMore": true, "latestSeq": 150, "expect": {"delivered": [{"seqRange": [42, 100], "replayed": false}, {"pushId": "p101", "replayed": false}], "requests": [{"afterSeq": 101}], "cursor": 101}}
+      ]
+    },
+    {"name": "C6 合并：暂存帧不在页内但不大于页最大，按序插入", "rule": "C6", "acs": ["AC-PUSH-03-15", "AC-PUSH-03-26"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}, {"pushId": "p45", "pushSeq": 45, "ts": 2000}], "hasMore": true, "latestSeq": 60, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}, {"pushId": "p45", "replayed": false}], "requests": [{"afterSeq": 45}], "cursor": 45}}
+      ]
+    },
+    {"name": "C7 合并：暂存帧不在页内但不大于 latestSeq，按序插入", "rule": "C7", "acs": ["AC-PUSH-03-26"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}, {"pushId": "p45", "pushSeq": 45, "ts": 2000}], "hasMore": false, "latestSeq": 45, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}, {"pushId": "p45", "replayed": false}], "cursor": 45, "pushSynced": [45]}}
+      ]
+    },
+    {"name": "C6 游标取 max：进行中实时帧已把游标推过本页", "rule": "C1、C6", "acs": ["AC-PUSH-06-5", "AC-PUSH-03-15"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "live", "frames": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 42}},
+        {"op": "live", "frames": [{"pushId": "p43", "pushSeq": 43, "ts": 2000}], "expect": {"delivered": [{"pushId": "p43", "replayed": false}, {"pushId": "p44", "replayed": false}], "cursor": 44}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "hasMore": true, "latestSeq": 60, "expect": {"requests": [{"afterSeq": 44}], "cursor": 44}}
+      ]
+    },
+    {"name": "C8 清空恢复前的暂存帧：之后不会持续轮询", "rule": "C8", "acs": ["AC-PUSH-03-31"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": false, "latestSeq": 100, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "cursor": 100, "pushSynced": [100]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}]}},
+        {"op": "live", "frames": [{"pushId": "p105", "pushSeq": 105, "ts": 2000}]},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 55, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 50], "ts": 500}, {"seqRange": [51, 55], "ts": 2000, "idPrefix": "n"}], "hasMore": false, "latestSeq": 55, "expect": {"delivered": [{"seqRange": [51, 55], "replayed": false, "idPrefix": "n"}], "cursor": 55, "pushSynced": [55]}},
+        {"op": "advance", "ms": 60000}
+      ]
+    },
+    {"name": "C8 本轮重新开始：pushSynced 不带恢复前交付的序号", "rule": "C8、4.8 节", "acs": ["AC-PUSH-03-31", "AC-PUSH-08-8"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 100], "ts": 500}], "hasMore": false, "latestSeq": 100, "expect": {"delivered": [{"seqRange": [1, 100], "replayed": true}], "cursor": 100, "pushSynced": [100]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}]}},
+        {"op": "live", "frames": [{"pushId": "x", "pushSeq": 101, "ts": 2000}], "expect": {"delivered": [{"pushId": "x", "replayed": false}], "cursor": 101}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 55, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 50], "ts": 500}, {"seqRange": [51, 55], "ts": 2000, "idPrefix": "n"}], "hasMore": false, "latestSeq": 55, "expect": {"delivered": [{"seqRange": [51, 55], "replayed": false, "idPrefix": "n"}], "cursor": 55, "pushSynced": [55]}}
+      ]
+    },
+    {"name": "原生：C8 重置时落盘，进程退出后从 0 重拉", "rule": "C8、4.9 节", "acs": ["AC-PUSH-03-16", "AC-PUSH-03-10"], "config": {"persistence": true, "stored": {"u1": {"cursor": 100, "seen": [{"seqRange": [1, 100], "ts": 2000}]}}},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 100}], "cursor": 100}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 55, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "restart"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [{"seqRange": [1, 50], "ts": 2000}, {"seqRange": [51, 55], "ts": 2000, "idPrefix": "n"}], "hasMore": false, "latestSeq": 55, "expect": {"delivered": [{"seqRange": [51, 55], "replayed": false, "idPrefix": "n"}], "cursor": 55, "pushSynced": [55]}}
+      ]
+    },
+    {"name": "原生：无 pushSeq 的帧也记入见过并落盘", "rule": "4.9 节", "acs": ["AC-PUSH-06-18"], "config": {"persistence": true},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"pushSynced": [0]}},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}], "expect": {"delivered": [{"pushId": "a1", "replayed": false}]}},
+        {"op": "restart"},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 5000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 0, "expect": {"pushSynced": [0]}},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}]}
+      ]
+    },
+    {"name": "回调内退订最后一个订阅者（翻页中）：其余不交付，游标不动，再订阅后只补没交付的", "rule": "C12", "acs": ["AC-PUSH-03-32"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "disconnect"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"pushId": "p42", "replayed": false}, {"pushId": "p43", "replayed": false}], "cursor": 41}, "unsubscribeOnDeliver": {"pushId": "p43", "id": "a"}},
+        {"op": "advance", "ms": 60000},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"seqRange": [42, 44], "ts": 2000}], "hasMore": false, "latestSeq": 44, "expect": {"delivered": [{"pushId": "p44", "replayed": false}], "cursor": 44, "pushSynced": [44]}}
+      ]
+    },
+    {"name": "回调内退订最后一个订阅者（实时帧）：这一条算交付，游标不动", "rule": "C1、C12", "acs": ["AC-PUSH-03-32"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 41}, "unsubscribeOnDeliver": {"pushId": "p42", "id": "a"}},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}, {"pushId": "p43", "pushSeq": 43, "ts": 2000}], "hasMore": false, "latestSeq": 43, "expect": {"delivered": [{"pushId": "p43", "replayed": false}], "cursor": 43, "pushSynced": [43]}}
+      ]
+    },
+    {"name": "回调内退订其中一个订阅者：另一个继续收，游标照常", "rule": "4.8 节", "acs": ["AC-PUSH-03-32", "AC-PUSH-08-6"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "subscribe", "id": "b"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}]}},
+        {"op": "ack", "pushes": [{"pushId": "p1", "pushSeq": 1, "ts": 2000}, {"pushId": "p2", "pushSeq": 2, "ts": 2000}], "hasMore": false, "latestSeq": 2, "expect": {"deliveredTo": {"a": [{"pushId": "p1", "replayed": false}], "b": [{"pushId": "p1", "replayed": false}, {"pushId": "p2", "replayed": false}]}, "cursor": 2, "pushSynced": [2]}, "unsubscribeOnDeliver": {"pushId": "p1", "id": "a"}}
+      ]
+    },
+    {"name": "room 和 ttlSeconds=0 的帧：字段原样交付，不动游标；没有订阅者时同样进队列", "rule": "C4", "acs": ["AC-PUSH-03-11", "AC-PUSH-08-5"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "r1", "ts": 2000, "target": "room", "roomId": "match-1"}], "expect": {"delivered": [{"pushId": "r1", "replayed": false, "target": "room", "roomId": "match-1"}], "cursor": 41}},
+        {"op": "live", "frames": [{"pushId": "t1", "ts": 2000, "target": "user"}], "expect": {"delivered": [{"pushId": "t1", "replayed": false, "target": "user"}], "cursor": 41}},
+        {"op": "unsubscribe", "id": "a"},
+        {"op": "live", "frames": [{"pushId": "r2", "ts": 2000, "target": "room", "roomId": "match-1"}, {"pushId": "t2", "ts": 2000, "target": "user"}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"delivered": [{"pushId": "r2", "replayed": false, "target": "room", "roomId": "match-1"}, {"pushId": "t2", "replayed": false, "target": "user"}], "requests": [{"afterSeq": 41}], "cursor": 41}}
+      ]
+    },
+    {"name": "无 pushSeq 的帧入队时不去重，交付时查", "rule": "C4", "acs": ["AC-PUSH-06-5", "AC-PUSH-08-5"],
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000},
+        {"op": "live", "frames": [{"pushId": "a1", "ts": 2000, "target": "all"}, {"pushId": "a1", "ts": 2000, "target": "all"}, {"pushId": "a2", "ts": 2000, "target": "all"}]},
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick", "expect": {"delivered": [{"pushId": "a1", "replayed": false}, {"pushId": "a2", "replayed": false}], "requests": [{"afterSeq": 0}]}}
+      ]
+    },
+    {"name": "注册到调度点之间到达的帧：先过调度点，再按有订阅者处理", "rule": "4.8 节", "acs": ["AC-PUSH-08-11"],
+      "steps": [
+        {"op": "connect", "userId": "u1", "serverTime": 1000},
+        {"op": "subscribe", "id": "a"},
+        {"op": "live", "frames": [{"pushId": "p1", "pushSeq": 1, "ts": 2000}], "expect": {"requests": [{"afterSeq": 0}], "delivered": [{"pushId": "p1", "replayed": false}], "cursor": 1}}
+      ]
+    },
+    {"name": "C11 的 pushSeq ≤ 游标 分支：fromLatest 应答后交付应答前暂存的旧帧，不动游标", "rule": "C10、C11、C3", "acs": ["AC-PUSH-03-17"], "config": {"pushStart": "latest"},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"fromLatest": true}], "cursor": null}},
+        {"op": "live", "frames": [{"pushId": "p5", "pushSeq": 5, "ts": 2000}]},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 7, "expect": {"delivered": [{"pushId": "p5", "replayed": false}], "cursor": 7, "pushSynced": [7]}}
+      ]
+    },
+    {"name": "fromLatest 应答忽略 pushes 和 hasMore；失败后重试仍是 fromLatest", "rule": "C10、C9", "acs": ["AC-PUSH-03-17"], "config": {"pushStart": "latest"},
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"fromLatest": true}], "cursor": null}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"fromLatest": true}]}},
+        {"op": "ack", "pushes": [{"pushId": "p3", "pushSeq": 3, "ts": 2000}], "hasMore": true, "latestSeq": 7, "expect": {"cursor": 7, "pushSynced": [7]}}
+      ]
+    },
+    {"name": "5 秒计时恰好到期就交付，暂存全部一起按序；成功后计时取消", "rule": "C9", "acs": ["AC-PUSH-03-20", "AC-PUSH-03-33"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}, {"pushId": "p45", "pushSeq": 45, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "live", "frames": [{"pushId": "p47", "pushSeq": 47, "ts": 2000}]},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1999, "expect": {"cursor": 41}},
+        {"op": "advance", "ms": 1, "expect": {"delivered": [{"pushId": "p44", "replayed": false}, {"pushId": "p45", "replayed": false}, {"pushId": "p47", "replayed": false}], "cursor": 41}}
+      ]
+    },
+    {"name": "5 秒计时从首次失败起算，不是从帧进暂存起算", "rule": "C9", "acs": ["AC-PUSH-03-33"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "advance", "ms": 6000},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1999},
+        {"op": "advance", "ms": 1, "expect": {"delivered": [{"pushId": "p44", "replayed": false}], "cursor": 41}}
+      ]
+    },
+    {"name": "成功应答取消 5 秒计时：再次失败时从新的失败重新计 5 秒", "rule": "C9", "acs": ["AC-PUSH-03-33"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "hasMore": false, "latestSeq": 42, "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 42, "pushSynced": [42]}},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 42}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 42}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 2000, "expect": {"requests": [{"afterSeq": 42}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 500, "expect": {"cursor": 42}},
+        {"op": "advance", "ms": 1499},
+        {"op": "advance", "ms": 1, "expect": {"delivered": [{"pushId": "p44", "replayed": false}], "cursor": 42}}
+      ]
+    },
+    {"name": "成功应答取消 5 秒计时：还有缺口的暂存帧不抢先", "rule": "C9、C11", "acs": ["AC-PUSH-03-33"],
+      "steps": [
+        {"op": "subscribe", "id": "a"},
+        {"op": "tick"},
+        {"op": "connect", "userId": "u1", "serverTime": 1000, "expect": {"requests": [{"afterSeq": 0}], "cursor": 0}},
+        {"op": "ack", "pushes": [], "hasMore": false, "latestSeq": 41, "expect": {"cursor": 41, "pushSynced": [41]}},
+        {"op": "live", "frames": [{"pushId": "p44", "pushSeq": 44, "ts": 2000}]},
+        {"op": "advance", "ms": 500, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ackError", "code": 5000},
+        {"op": "advance", "ms": 1000, "expect": {"requests": [{"afterSeq": 41}]}},
+        {"op": "ack", "pushes": [{"pushId": "p42", "pushSeq": 42, "ts": 2000}], "hasMore": false, "latestSeq": 42, "expect": {"delivered": [{"pushId": "p42", "replayed": false}], "cursor": 42, "pushSynced": [42]}},
+        {"op": "advance", "ms": 499},
+        {"op": "advance", "ms": 1, "expect": {"requests": [{"afterSeq": 42}]}},
+        {"op": "advance", "ms": 6000, "expect": {"cursor": 42}}
+      ]
+    }
+  ]
+}

@@ -34,6 +34,13 @@ public struct IMClientOptions {
     public var logger: IMLogger = SilentLogger()
     /// Whether the app is in the foreground. The default reads the app state on iOS, and is always true elsewhere.
     public var isVisible: (@MainActor () -> Bool)?
+    /// Where a device with no cursor starts receiving pushes (PRD-live C10).
+    public var pushStart: PushStart = .beginning
+    /// The uncalibrated limits of the push catch-up.
+    public var pushLimits = PushLimits()
+    /// Where the push cursor lives (PRD-live 4.9), apart from the local database: it survives logout, kicks, corruption and
+    /// schema upgrades. nil keeps it in memory, so every new instance replays the inbox from 0.
+    public var pushCursorStore: PushCursorStore? = FilePushCursorStore()
 
     // Test injection (FE-007).
     public var transport: IMTransport?
@@ -137,6 +144,7 @@ public final class IMClient {
     let newId: () -> String
     private let isVisible: @MainActor () -> Bool
     let conn: Connection
+    let pushSync: PushSync
     private let databaseDirectory: URL?
     private let maxCached: Int
 
@@ -195,6 +203,10 @@ public final class IMClient {
                 backoffMaxMs: o.timings.backoffMaxMs,
                 jitter: o.timings.jitter),
             random: o.random ?? { Double.random(in: 0..<1) })
+        let connRef = conn
+        pushSync = PushSync(
+            clock: clockRef, log: o.logger, pushStart: o.pushStart, limits: o.pushLimits, store: o.pushCursorStore,
+            request: { data, completion in connRef.request("pushSync", data, completion: completion) })
         store = Store(me: { "" })
         store = Store(me: { [unowned self] in MainActor.assumeIsolated { self.me } })
         conn.onState = { [weak self] in self?.onState($0) }
@@ -438,6 +450,7 @@ public final class IMClient {
     // MARK: Connection events
 
     private func onState(_ s: ConnState) {
+        if s == .disconnected { pushSync.onDisconnected() }
         emit(.state(s))
         if s == .connected {
             if let b = bannerTimer { clock.clearTimeout(b) }
@@ -469,6 +482,7 @@ public final class IMClient {
         mutesChanged()
         purgeOldRequests()
         flushQueued()
+        pushSync.onAuth(userId: a.userId, serverTime: a.serverTime)  // Does not wait for convs (AC-PUSH-03-24).
         Task { [weak self] in await self?.runInitialSync() }
     }
 
@@ -554,6 +568,10 @@ public final class IMClient {
                 return
             }
             onMessage(m)
+            return
+        }
+        if f.cmd == "push" {
+            pushSync.onLive(raw: f.raw)
             return
         }
         guard f.cmd == "event", let type = f.eventType else { return }  // Unknown commands are ignored.
@@ -984,6 +1002,7 @@ public final class IMClient {
         if let r = readTimer { clock.clearTimeout(r) }
         readTimer = nil
         destroyDatabase()
+        pushSync.logout()
         store = Store(me: { [unowned self] in MainActor.assumeIsolated { self.me } })
         mutes.clear()
         mutesChanged()

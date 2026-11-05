@@ -66,6 +66,7 @@ final class Harness {
         opts.databaseDirectory = directory
         opts.maxCachedMessagesPerConversation = maxCached
         opts.logger = logs
+        opts.pushCursorStore = nil
         var n = 0
         opts.newId = {
             n += 1

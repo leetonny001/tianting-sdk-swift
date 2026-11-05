@@ -187,6 +187,9 @@
         },
         {
           "$ref": "#/$defs/Ping"
+        },
+        {
+          "$ref": "#/$defs/PushSyncReq"
         }
       ]
     },
@@ -1796,7 +1799,7 @@
         },
         "data": {
           "type": "object",
-          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}",
+          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}",
           "properties": {
             "userId": {
               "$ref": "#/$defs/UserId"
@@ -2165,6 +2168,18 @@
                 }
               ],
               "description": "auth：用户被用户级禁言时才出现，永久为 null（第二批）"
+            },
+            "pushes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PushData"
+              },
+              "description": "PRD-live 4.2 节：按 pushSeq 升序，只含未过期的"
+            },
+            "latestSeq": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "这个用户分配过的最大 pushSeq，不随清理回退"
             }
           },
           "additionalProperties": false
@@ -2208,26 +2223,7 @@
           "const": "push"
         },
         "data": {
-          "type": "object",
-          "required": [
-            "type",
-            "data"
-          ],
-          "properties": {
-            "pushId": {
-              "type": "string"
-            },
-            "type": {
-              "type": "string",
-              "minLength": 1,
-              "description": "业务类型，如 goal / withdraw / liveStatus（二期）"
-            },
-            "data": {},
-            "ts": {
-              "$ref": "#/$defs/TimestampMs"
-            }
-          },
-          "additionalProperties": false
+          "$ref": "#/$defs/PushData"
         }
       },
       "additionalProperties": false
@@ -2525,6 +2521,167 @@
       "properties": {
         "cmd": {
           "const": "pong"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PushData": {
+      "type": "object",
+      "description": "系统推送（PRD-live v1.0 4.2 节）。pushSeq 只在进收件箱的推送上出现；roomId 只在 target=room 时出现（帧格式 L1 冻结，接口 L2 开放）",
+      "required": [
+        "pushId",
+        "type",
+        "data",
+        "ts",
+        "target"
+      ],
+      "properties": {
+        "pushId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "description": "调用方生成，全局唯一（建议 UUID）"
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "业务类型，服务端不解释"
+        },
+        "data": {
+          "description": "业务负载，序列化后 ≤ 4KB"
+        },
+        "ts": {
+          "$ref": "#/$defs/TimestampMs",
+          "description": "首次受理时间；pending 重播时沿用"
+        },
+        "target": {
+          "enum": [
+            "user",
+            "all",
+            "room"
+          ]
+        },
+        "pushSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "按用户递增；只有进收件箱的推送才有"
+        },
+        "roomId": {
+          "$ref": "#/$defs/UserId",
+          "description": "只有 target=room 才有"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "target": {
+                "const": "room"
+              }
+            },
+            "required": [
+              "target"
+            ]
+          },
+          "then": {
+            "required": [
+              "roomId"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "roomId"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "target": {
+                "const": "user"
+              }
+            },
+            "required": [
+              "target"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "pushSeq"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "PushSyncReq": {
+      "type": "object",
+      "description": "PRD-live 4.2 节：{afterSeq, limit?} 或 {fromLatest:true}，二选一。fromLatest 只取最新序号建立游标，不回放",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "pushSync"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "afterSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "fromLatest": {
+              "const": true
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "afterSeq"
+              ],
+              "not": {
+                "required": [
+                  "fromLatest"
+                ]
+              }
+            },
+            {
+              "required": [
+                "fromLatest"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "afterSeq"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "limit"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

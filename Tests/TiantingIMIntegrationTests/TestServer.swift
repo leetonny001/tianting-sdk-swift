@@ -10,7 +10,7 @@ final class TestServer: @unchecked Sendable {
     static let adminKey = "sdk-it-admin-key-0123456789abcdef"
     private static let callerId = "sdk-it"
     private static let callerSecret = "sdk-it-caller-secret-0123456789abcdef"
-    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve", "group.write"]
+    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve", "group.write", "push.user", "push.all"]
 
     let wsURL: String
     private let adminBase: String
@@ -95,6 +95,8 @@ final class TestServer: @unchecked Sendable {
             [
                 "id": TestServer.callerId, "alg": "hmac-sha256",
                 "secret": Data(TestServer.callerSecret.utf8).base64EncodedString(), "scopes": TestServer.callerScopes,
+                // Whoever holds push.all must list its types, or the server refuses to start (PRD-live F-PUSH-09 rule 3).
+                "pushTypes": ["notice", "promo"],
             ]
         ]
         try JSONSerialization.data(withJSONObject: spec).write(to: callers)

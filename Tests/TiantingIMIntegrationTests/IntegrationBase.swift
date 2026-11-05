@@ -92,6 +92,7 @@ class IntegrationCase: XCTestCase {
         o.systemEvents = false
         o.databaseDirectory = directory
         o.newId = newId
+        o.pushCursorStore = nil
         var t = IMClientTimings()
         t.backoffBaseMs = 50
         t.backoffMaxMs = 100

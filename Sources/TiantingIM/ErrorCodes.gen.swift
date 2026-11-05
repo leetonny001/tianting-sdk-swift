@@ -34,6 +34,7 @@ public enum ErrorCode {
     public static let targetNotGroupMember = 4046
     public static let groupExists = 4090
     public static let friendRequestHandled = 4091
+    public static let pushIdConflict = 4094
     public static let groupMemberLimitExceeded = 4130
     public static let batchLimitExceeded = 4131
     public static let friendLimitExceeded = 4132
@@ -87,6 +88,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4046: ErrorInfo(name: "TARGET_NOT_GROUP_MEMBER", retryable: false, message: "操作对象不是群成员"),
     4090: ErrorInfo(name: "GROUP_EXISTS", retryable: false, message: "群 ID 已存在"),
     4091: ErrorInfo(name: "FRIEND_REQUEST_HANDLED", retryable: false, message: "申请已同意"),
+    4094: ErrorInfo(name: "PUSH_ID_CONFLICT", retryable: false, message: "同一 pushId 的调用方或内容不同"),
     4130: ErrorInfo(name: "GROUP_MEMBER_LIMIT_EXCEEDED", retryable: false, message: "群成员已达上限"),
     4131: ErrorInfo(name: "BATCH_LIMIT_EXCEEDED", retryable: false, message: "单次批量操作数量超限"),
     4132: ErrorInfo(name: "FRIEND_LIMIT_EXCEEDED", retryable: false, message: "好友数量已达上限"),
