@@ -1780,6 +1780,10 @@
             }
           ],
           "description": "我在该群被禁言时才出现，永久禁言为 null（第二批）；单聊不带"
+        },
+        "allMuted": {
+          "type": "boolean",
+          "description": "该群开启了全群禁言时才出现（P1，F-ADM-42），值为 true；所有成员都带，群主、管理员不受限，结合 myRole 判断；单聊不带"
         }
       },
       "additionalProperties": false

@@ -245,7 +245,7 @@ extension IMClient {
             do {
                 let ack = try await conn.request(GroupCreateAck.self, "groupCreate", .object(data))
                 store.upsertConversation(ack.conv)
-                setGroupMute(ack.conv.convId, ack.conv.mutedUntil)
+                setGroupMute(ack.conv.convId, ack.conv.mutedUntil, allMuted: ack.conv.allMuted)
                 mutesChanged()
                 emitConversations()
                 guard let conv = store.conversation(ack.conv.convId) else {
@@ -310,6 +310,7 @@ extension IMClient {
         {
             emitConversations()
         }
+        groupRoleRefreshed(groupId)
         return info
     }
 

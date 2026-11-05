@@ -114,7 +114,8 @@ func conv(
     updatedAt: Int64 = 0,
     memberCount: Int64? = nil,
     myRole: String? = nil,
-    mutedUntil: JSONValue? = nil
+    mutedUntil: JSONValue? = nil,
+    allMuted: Bool = false
 ) -> JSONValue {
     var o: [String: JSONValue] = [
         "convId": .string(convId),
@@ -130,6 +131,7 @@ func conv(
     if let memberCount { o["memberCount"] = .int(memberCount) }
     if let myRole { o["myRole"] = .string(myRole) }
     if let mutedUntil { o["mutedUntil"] = mutedUntil }
+    if allMuted { o["allMuted"] = true }
     return .object(o)
 }
 

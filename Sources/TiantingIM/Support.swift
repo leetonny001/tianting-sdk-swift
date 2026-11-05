@@ -151,11 +151,13 @@ private func isAsciiLetter(_ s: UnicodeScalar) -> Bool {
     (s.value >= 0x41 && s.value <= 0x5A) || (s.value >= 0x61 && s.value <= 0x7A)
 }
 
-// MARK: - Mutes (PRD-admin F-ADM-40, 41)
+// MARK: - Mutes (PRD-admin F-ADM-40, 41, 42)
 
 public struct MuteInfo: Sendable, Equatable {
     public enum Scope: String, Sendable {
         case user, group
+        /// Group-wide mute: the bar says "群主已开启全员禁言" and `mutedUntil` is always `.permanent`.
+        case groupAll
     }
     public let scope: Scope
     public let groupId: String?
@@ -174,6 +176,8 @@ private func isActive(_ until: Until, _ now: Int64) -> Bool {
 struct MuteTable: Equatable {
     private var user: Until?
     private var groups: [String: Until] = [:]
+    /// Groups with a group-wide mute. True means the server already refused a send here (4031): local roles no longer exempt.
+    private var groupAll: [String: Bool] = [:]
 
     mutating func setUser(_ until: Until?) {
         user = until
@@ -183,13 +187,30 @@ struct MuteTable: Equatable {
         groups[groupId] = until
     }
 
+    mutating func setGroupAll(_ groupId: String, on: Bool, denied: Bool = false) {
+        groupAll[groupId] = on ? denied : nil
+    }
+
+    /// A fresh role arrived: the earlier refusal may have come from a stale role, so judge by role again.
+    mutating func clearGroupAllDenied(_ groupId: String) {
+        if groupAll[groupId] != nil { groupAll[groupId] = false }
+    }
+
+    var groupAllIds: [String] { groupAll.keys.sorted() }
+
     /// The mute for this conversation: the user level wins (F-ADM-41 rule 2); a group mute only affects that group.
-    func get(_ convId: String, now: Int64) -> MuteInfo? {
+    /// A group-wide mute does not restrict owners and admins (F-ADM-42); `myRole` is what the server said about this
+    /// user. Once a send was refused with 4031 the server wins.
+    func get(_ convId: String, now: Int64, myRole: GroupRole? = nil) -> MuteInfo? {
         if let user, isActive(user, now) { return MuteInfo(scope: .user, groupId: nil, mutedUntil: user) }
         guard convId.hasPrefix("group:") else { return nil }
         let groupId = String(convId.dropFirst("group:".count))
-        guard let until = groups[groupId], isActive(until, now) else { return nil }
-        return MuteInfo(scope: .group, groupId: groupId, mutedUntil: until)
+        if let until = groups[groupId], isActive(until, now) {
+            return MuteInfo(scope: .group, groupId: groupId, mutedUntil: until)
+        }
+        guard let denied = groupAll[groupId] else { return nil }
+        if !denied, myRole == .owner || myRole == .admin { return nil }
+        return MuteInfo(scope: .groupAll, groupId: groupId, mutedUntil: .permanent)
     }
 
     /// The earliest expiry; nil when nothing can expire.
@@ -209,5 +230,6 @@ struct MuteTable: Equatable {
     mutating func clear() {
         user = nil
         groups = [:]
+        groupAll = [:]
     }
 }

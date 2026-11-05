@@ -132,9 +132,11 @@ struct ServerConversation: Sendable, Decodable {
     var myRole: GroupRole?
     /// Only present while I am muted in that group; `.permanent` for JSON null.
     var mutedUntil: Until?
+    /// Only present while the group has a group-wide mute (P1, F-ADM-42); owners and admins get it too but are not restricted.
+    var allMuted: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil
+        case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil, allMuted
     }
 
     init(from decoder: Decoder) throws {
@@ -151,6 +153,7 @@ struct ServerConversation: Sendable, Decodable {
         memberCount = try c.decodeIfPresent(Int.self, forKey: .memberCount)
         myRole = try c.decodeIfPresent(GroupRole.self, forKey: .myRole)
         mutedUntil = try c.decodeUntil(forKey: .mutedUntil)
+        allMuted = c.value(.allMuted, default: false)
     }
 }
 

@@ -164,6 +164,7 @@ public final class IMClient {
     var serverOffset: Int64 = 0  // server time minus local time (auth ack's serverTime)
     private var mutes = MuteTable()
     private var lastMutes = MuteTable()
+    private var lastGroupAllRoles: [GroupRole?] = []
     private var muteTimer: TimerHandle?
 
     // Social.
@@ -318,9 +319,10 @@ public final class IMClient {
         return .ok(msg)
     }
 
-    /// This conversation's current mute; nil when not muted. Expiry uses server time; the user level wins.
+    /// This conversation's current mute; nil when not muted. Expiry uses server time; the user level wins;
+    /// a group-wide mute does not restrict owners and admins.
     public func muteState(_ convId: String) -> MuteInfo? {
-        mutes.get(convId, now: serverNow())
+        mutes.get(convId, now: serverNow(), myRole: store.conversation(convId)?.myRole)
     }
 
     /// Debug interface (AC-ADM-31-3): a copy of conversations and all messages in memory. Never contains the token.
@@ -621,7 +623,7 @@ public final class IMClient {
         case "convAdded":
             let ev = try decodeFrameData(ConvAddedEvent.self, from: raw)
             store.upsertConversation(ev.conv)
-            setGroupMute(ev.conv.convId, ev.conv.mutedUntil)
+            setGroupMute(ev.conv.convId, ev.conv.mutedUntil, allMuted: ev.conv.allMuted)
             mutesChanged()
             emitConversations()
         case "convRemoved":
@@ -690,6 +692,8 @@ public final class IMClient {
             mutes.setUser(until)
         } else if scope == "group", let groupId {
             mutes.setGroup(groupId, until)
+        } else if scope == "groupAll", let groupId {
+            mutes.setGroupAll(groupId, on: until != nil)
         } else {
             return
         }
@@ -698,6 +702,10 @@ public final class IMClient {
 
     /// `send` returned 4031: updates state from `details` so the UI shows the bar. The message only fails, no resend.
     private func onMutedAck(_ details: [String: JSONValue]?) {
+        if details?["scope"]?.stringValue == "groupAll", let groupId = details?["groupId"]?.stringValue {
+            onGroupAllDenied(groupId)
+            return
+        }
         guard let details, let value = details["mutedUntil"] else { return }
         let until: Until
         switch value {
@@ -709,17 +717,37 @@ public final class IMClient {
         applyMute(scope: details["scope"]?.stringValue, groupId: details["groupId"]?.stringValue, until: until)
     }
 
-    func setGroupMute(_ convId: String, _ until: Until?) {
+    /// A send was refused under a group-wide mute: the server wins and the bar shows. If the local role still says
+    /// owner or admin, it is stale, so fetch it again.
+    private func onGroupAllDenied(_ groupId: String) {
+        mutes.setGroupAll(groupId, on: true, denied: true)
+        mutesChanged()
+        let role = store.conversation(groupConvId(groupId))?.myRole
+        if role == .owner || role == .admin { onGroupChanged(groupId) }
+    }
+
+    func setGroupMute(_ convId: String, _ until: Until?, allMuted: Bool = false) {
         guard convId.hasPrefix("group:") else { return }
-        mutes.setGroup(String(convId.dropFirst("group:".count)), until)
+        let groupId = String(convId.dropFirst("group:".count))
+        mutes.setGroup(groupId, until)
+        mutes.setGroupAll(groupId, on: allMuted)
+    }
+
+    /// A fresh role arrived (`groupInfo`).
+    func groupRoleRefreshed(_ groupId: String) {
+        mutes.clearGroupAllDenied(groupId)
+        mutesChanged()
     }
 
     /// Emits on change, and re-arms for the earliest expiry.
     func mutesChanged() {
         if let m = muteTimer { clock.clearTimeout(m) }
         muteTimer = nil
-        if mutes != lastMutes {
+        // Whether a group-wide mute restricts me also depends on my role: tell the UI when that changes too.
+        let roles = mutes.groupAllIds.map { store.conversation(groupConvId($0))?.myRole }
+        if mutes != lastMutes || roles != lastGroupAllRoles {
             lastMutes = mutes
+            lastGroupAllRoles = roles
             emit(.muteChanged)
         }
         guard let next = mutes.nextExpiry() else { return }
@@ -780,7 +808,7 @@ public final class IMClient {
         let gone = store.setConversations(ack.convs, truncated: ack.truncated)
         lastRefreshAt = clock.now()
         for c in ack.convs {
-            setGroupMute(c.convId, c.mutedUntil)
+            setGroupMute(c.convId, c.mutedUntil, allMuted: c.allMuted)
             // Having missed msgDeleted, the summary is the only clue: wipe the loaded copy too.
             if let l = c.lastMsg, l.deleted == true,
                 store.deleteMessages(convId: c.convId, msgIds: [l.msgId], seqs: [])

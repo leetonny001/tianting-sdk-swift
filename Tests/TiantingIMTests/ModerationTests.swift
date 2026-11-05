@@ -340,8 +340,123 @@ final class ModerationTests: IMTestCase {
     func testUnknownScopeIgnored() async {
         let h = setup()
         let c = await online(h)
-        c.receive(muted(["scope": "groupAll", "groupId": "g1", "mutedUntil": nil]))
+        c.receive(muted(["scope": "everyone", "groupId": "g1", "mutedUntil": nil]))
         XCTAssertNil(h.im.muteState(G1))
+    }
+
+    // MARK: Group-wide mute (FE-354, AC-UI-41-6, AC-ADM-42-2)
+
+    private let allMute = MuteInfo(scope: .groupAll, groupId: "g1", mutedUntil: .permanent)
+    private let allEvent: [String: JSONValue] = ["scope": "groupAll", "groupId": "g1", "mutedUntil": nil]
+
+    private func online(_ h: Harness, role: String?, allMuted: Bool = false) async -> FakeConnection {
+        h.im.connect(token: "t")
+        return await h.login(
+            "alice", convs: [conv(G1, myRole: role, allMuted: allMuted), conv(G2, myRole: "member"), conv(AB)])
+    }
+
+    private func denyLastSend(_ c: FakeConnection) async {
+        c.receive([
+            "id": .string(c.last("send")!.id!), "cmd": "ack",
+            "error": ["code": 4031, "msg": "muted", "details": .object(allEvent)],
+        ])
+        await flush()
+    }
+
+    func testGroupAllMuteRegularMember() async {
+        for role in ["member", nil] as [String?] {
+            let h = setup()
+            let c = await online(h, role: role)
+            let base = muteEvents(h)
+            c.receive(muted(allEvent))
+            XCTAssertEqual(h.im.muteState(G1), allMute)
+            XCTAssertNil(h.im.muteState(G2))
+            XCTAssertNil(h.im.muteState(AB))
+            XCTAssertEqual(muteEvents(h), base + 1)
+            c.receive(unmuted(["scope": "groupAll", "groupId": "g2"]))
+            XCTAssertEqual(h.im.muteState(G1), allMute)
+            c.receive(unmuted(["scope": "groupAll", "groupId": "g1"]))
+            XCTAssertNil(h.im.muteState(G1))
+            XCTAssertEqual(muteEvents(h), base + 2)
+        }
+    }
+
+    func testGroupAllMuteDoesNotRestrictOwnerOrAdmin() async {
+        for role in ["owner", "admin"] {
+            let h = setup()
+            let c = await online(h, role: role, allMuted: true)
+            XCTAssertNil(h.im.muteState(G1))
+            c.receive(muted(allEvent))
+            XCTAssertNil(h.im.muteState(G1))
+        }
+    }
+
+    func testIndividualMuteBeatsGroupAllExemption() async {
+        let h = setup()
+        let c = await online(h, role: "owner")
+        c.receive(muted(allEvent))
+        let until = h.clock.now() + 60_000
+        c.receive(muted(["scope": "group", "groupId": "g1", "mutedUntil": .int(until)]))
+        XCTAssertEqual(h.im.muteState(G1), MuteInfo(scope: .group, groupId: "g1", mutedUntil: .at(until)))
+        c.receive(unmuted(["scope": "group", "groupId": "g1"]))
+        XCTAssertNil(h.im.muteState(G1))
+        c.receive(muted(["scope": "user", "mutedUntil": nil]))
+        XCTAssertEqual(h.im.muteState(G1)?.scope, .user)
+    }
+
+    func testGroupAllFromConvsAndCleared() async {
+        let h = setup()
+        let c = await online(h, role: "member", allMuted: true)
+        XCTAssertEqual(h.im.muteState(G1), allMute)
+        c.drop(1006)
+        let c2 = await h.reconnect()
+        c2.ack("convs", ["convs": [conv(G1, myRole: "member")], "truncated": false])
+        await flush()
+        XCTAssertNil(h.im.muteState(G1))
+    }
+
+    func testGroupAllFromConvAddedAndConvRemoved() async {
+        let h = setup()
+        let c = await online(h, role: "member")
+        c.receive(event("convAdded", ["conv": conv("group:g3", myRole: "member", allMuted: true)]))
+        XCTAssertEqual(h.im.muteState("group:g3"), MuteInfo(scope: .groupAll, groupId: "g3", mutedUntil: .permanent))
+        c.receive(event("convRemoved", ["convId": "group:g3", "reason": "removed"]))
+        XCTAssertNil(h.im.muteState("group:g3"))
+    }
+
+    func testGroupAll4031MarksFailedAndShowsBar() async throws {
+        let h = setup()
+        let c = await online(h, role: "member")
+        _ = try h.im.send(G1, "x")
+        await denyLastSend(c)
+        XCTAssertEqual(h.im.muteState(G1), allMute)
+        XCTAssertEqual(h.im.messages(G1)[0].error, .code(4031))
+    }
+
+    func testGroupAll4031WithStaleRoleFollowsServerThenRefreshedRole() async throws {
+        let h = setup()
+        let c = await online(h, role: "admin")
+        c.receive(muted(allEvent))
+        XCTAssertNil(h.im.muteState(G1))
+        _ = try h.im.send(G1, "x")
+        await denyLastSend(c)
+        XCTAssertEqual(h.im.muteState(G1), allMute)
+        func info(_ role: JSONValue) -> JSONValue {
+            [
+                "groupId": "g1", "name": "g", "notice": "", "noticeBy": "", "noticeAt": 0, "owner": "o", "managed": false,
+                "myRole": role, "memberCount": 3, "maxMembers": 500, "historyVisible": false, "createdAt": 1,
+            ]
+        }
+        c.ack("groupInfo", info("member"))
+        await flush()
+        XCTAssertEqual(h.im.muteState(G1), allMute)
+        let base = muteEvents(h)
+        c.receive(event("groupChanged", ["groupId": "g1"]))
+        await flush()
+        c.ack("groupInfo", info("admin"))
+        await flush()
+        XCTAssertNil(h.im.muteState(G1))
+        XCTAssertEqual(muteEvents(h), base + 1)
     }
 
     // frames.json `invalid`: a `muted` without mutedUntil is not a permanent mute.

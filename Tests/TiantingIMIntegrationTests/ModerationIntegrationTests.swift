@@ -39,6 +39,42 @@ final class ModerationIntegrationTests: IntegrationCase {
         }
     }
 
+    // AC-ADM-42-1, AC-ADM-42-2, AC-UI-41-6
+    func testGroupAllMute() async throws {
+        let (o, a, m, g) = (uid("o"), uid("a"), uid("m"), uid("g"))
+        try await importUsers([o, a, m])
+        let convId = groupConvId(g)
+        try await srv.signed("POST", "/admin/groups", ["groupId": g, "name": g, "members": [o, a, m], "owner": o])
+        let owner = try await login(o)
+        try await owner.setGroupAdmin(g, userId: a, admin: true)
+        let admin = try await login(a)
+        let member = try await login(m)
+        try await untilTrue("member sees group") { self.conv(member, convId) != nil }
+        try await untilTrue("admin role") { self.conv(admin, convId)?.myRole == .admin }
+        func sendSent(_ im: IMClient, _ text: String) async throws {
+            let id = try sendOK(im, convId, text)
+            try await untilTrue(text) { im.messages(convId).first { $0.clientMsgId == id }?.status == .sent }
+        }
+
+        try await srv.signed("POST", "/admin/mute", ["scope": "groupAll", "groupId": g, "reason": "it"])
+        let want = MuteInfo(scope: .groupAll, groupId: g, mutedUntil: .permanent)
+        try await untilTrue("member muted") { member.muteState(convId) == want }
+        XCTAssertNil(owner.muteState(convId))
+        XCTAssertNil(admin.muteState(convId))
+        try await sendSent(owner, "owner")
+        try await sendSent(admin, "admin")
+        let id = try sendOK(member, convId, "member")
+        try await untilTrue("4031") { member.messages(convId).first { $0.clientMsgId == id }?.status == .failed }
+        XCTAssertEqual(member.messages(convId).first { $0.clientMsgId == id }?.error, .code(4031))
+
+        let again = try await login(m)
+        try await untilTrue("allMuted from convs") { again.muteState(convId) == want }
+
+        try await srv.signed("POST", "/admin/unmute", ["scope": "groupAll", "groupId": g, "reason": "it"])
+        try await untilTrue("unmuted") { member.muteState(convId) == nil && again.muteState(convId) == nil }
+        try await sendSent(member, "back")
+    }
+
     func testPermanentBanUntilNull() async throws {
         let u = uid("ban")
         let im = try await login(u)
