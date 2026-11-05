@@ -33,7 +33,7 @@ im.retry(convId, clientMsgId)
 im.removeFailed(convId, clientMsgId)
 try await im.loadHistory(convId)
 im.setActiveConversation(convId)                           // 已读上报依据
-im.muteState(convId)                                       // nil，或 MuteInfo（user / group，mutedUntil 永久为 .permanent）
+im.muteState(convId)                                       // nil，或 MuteInfo（user / group / groupAll，mutedUntil 永久为 .permanent；全群禁言不限制群主、管理员）
 im.disconnect()                                            // 退出登录：以 1000 关闭，清内存和本地库
 im.close()                                                 // 只停止连接，保留本地库
 ```
