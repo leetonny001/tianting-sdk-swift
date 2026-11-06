@@ -51,7 +51,8 @@ final class Harness {
         random: Double = 0.5,  // zero jitter, exact backoff
         platform: Platform = .ios,
         directory: URL? = nil,
-        maxCached: Int = 100
+        maxCached: Int = 100,
+        heartbeatMs: Int64? = nil
     ) {
         let clock = clock ?? FakeClock()
         self.clock = clock
@@ -67,6 +68,7 @@ final class Harness {
         opts.maxCachedMessagesPerConversation = maxCached
         opts.logger = logs
         opts.pushCursorStore = nil
+        if let heartbeatMs { opts.timings.heartbeatMs = heartbeatMs }
         var n = 0
         opts.newId = {
             n += 1
@@ -186,9 +188,11 @@ class IMTestCase: XCTestCase {
 
     func setup(
         clock: FakeClock? = nil, random: Double = 0.5, platform: Platform = .ios, directory: URL? = nil,
-        maxCached: Int = 100
+        maxCached: Int = 100, heartbeatMs: Int64? = nil
     ) -> Harness {
-        let h = Harness(clock: clock, random: random, platform: platform, directory: directory, maxCached: maxCached)
+        let h = Harness(
+            clock: clock, random: random, platform: platform, directory: directory, maxCached: maxCached,
+            heartbeatMs: heartbeatMs)
         harnesses.append(h)
         return h
     }

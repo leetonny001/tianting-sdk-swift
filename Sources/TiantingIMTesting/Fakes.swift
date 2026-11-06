@@ -235,3 +235,60 @@ public final class FakeHttp: HttpTransport {
         calls.filter { !$0.settled }
     }
 }
+
+/// A session store for tests and app previews: remembers the calls in order, and can hold a save open or make it fail.
+@MainActor
+public final class MemorySessionStore: AccountSessionStore {
+    public var saved: AccountSession?
+    public var pendingLogouts: [PendingLogout] = []
+    public private(set) var saves: [AccountSession] = []
+    public private(set) var clears = 0
+    /// Every call, in order, e.g. "save" (tests of the order against HTTP and token use).
+    public private(set) var calls: [String] = []
+    public var failSave = false
+    /// While true, a `save` waits until `releaseSaves()`.
+    public var holdSaves = false
+    /// While true, a `clear` waits until `releaseSaves()`.
+    public var holdClears = false
+    private var heldSaves: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func load() async throws -> AccountSession? {
+        calls.append("load")
+        return saved
+    }
+
+    public func save(_ session: AccountSession) async throws {
+        calls.append("save")
+        if holdSaves { await withCheckedContinuation { heldSaves.append($0) } }
+        if failSave { throw FakeHttpError(message: "disk full") }
+        saved = session
+        saves.append(session)
+    }
+
+    public func clear() async throws {
+        calls.append("clear")
+        if holdClears { await withCheckedContinuation { heldSaves.append($0) } }
+        saved = nil
+        clears += 1
+    }
+
+    public func loadPendingLogouts() async throws -> [PendingLogout] {
+        calls.append("loadPending")
+        return pendingLogouts
+    }
+
+    public func savePendingLogouts(_ pending: [PendingLogout]) async throws {
+        calls.append("savePending")
+        pendingLogouts = pending
+    }
+
+    public func releaseSaves() {
+        holdSaves = false
+        holdClears = false
+        let held = heldSaves
+        heldSaves = []
+        for c in held { c.resume() }
+    }
+}

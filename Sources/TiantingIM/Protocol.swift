@@ -186,14 +186,16 @@ struct AuthAck: Sendable, Decodable {
     var userId: String
     var serverTime: Int64
     var mutedUntil: Until?
+    var recoveryCodeUnacked: Bool
 
-    private enum CodingKeys: String, CodingKey { case userId, serverTime, mutedUntil }
+    private enum CodingKeys: String, CodingKey { case userId, serverTime, mutedUntil, recoveryCodeUnacked }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         userId = try c.decode(String.self, forKey: .userId)
         serverTime = try c.decode(Int64.self, forKey: .serverTime)
         mutedUntil = try c.decodeUntil(forKey: .mutedUntil)
+        recoveryCodeUnacked = c.value(.recoveryCodeUnacked, default: false)
     }
 }
 

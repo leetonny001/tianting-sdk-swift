@@ -79,7 +79,22 @@ public enum IMEvent: Sendable {
     case socialSettings(SocialSettings)
     /// Group info or members changed; the local conversation is already updated from `info`.
     case groupChanged(groupId: String, info: GroupInfo)
+    /// A security notice such as a login on a new device (PRD-chat F-ACC-02 rule 3b). Unknown kinds are not sent.
+    case securityNotice(SecurityNotice)
+    /// The auth ack says the newest recovery code is not acknowledged (F-ACC-05 rule 1): force the save page.
+    case recoveryCodeUnacked
+    /// Someone's profile changed; read `profileOf` / `displayName` (F-ACC-06: my nickname shows at once).
+    case profileChanged(userId: String)
 }
+
+public struct SecurityNotice: Sendable, Equatable {
+    public let kind: String
+    public let at: Int64
+    public let platform: String?
+}
+
+/// The security notices this batch knows (server/internal/protocol/frames.go).
+private let securityNoticeKinds: Set<String> = ["newDeviceLogin"]
 
 public enum SendResult: Sendable, Equatable {
     case ok(Message)
@@ -179,6 +194,8 @@ public final class IMClient {
     private(set) var database: LocalDatabase?
     private var listeners: [UUID: @MainActor (IMEvent) -> Void] = [:]
     private var systemEvents: SystemEventsMonitor?
+    private var provider: TokenProvider?
+    private var unsubscribeProvider: [@MainActor () -> Void] = []
 
     public init(options o: IMClientOptions) {
         t = o.timings
@@ -254,8 +271,52 @@ public final class IMClient {
 
     public var state: ConnState { conn.state }
 
+    /// Connects in demo mode, behavior unchanged. Account sessions use `connect(tokenProvider:)`.
     public func connect(token: String) {
+        bindProvider(nil)
         conn.start(token: token)
+    }
+
+    /// Connects in account mode with `AccountClient.tokenProvider`: refreshes by itself, reconnects after a token change,
+    /// compares generations on 4011 (PRD-chat 13.1, F-ACC-03 rules 5, 7).
+    public func connect(tokenProvider: TokenProvider) {
+        bindProvider(tokenProvider)
+        conn.start(provider: tokenProvider)
+    }
+
+    private func bindProvider(_ p: TokenProvider?) {
+        if p === provider { return }
+        for off in unsubscribeProvider { off() }
+        provider = p
+        guard let p else {
+            unsubscribeProvider = []
+            return
+        }
+        unsubscribeProvider = [
+            p.onEnded { [weak self] in self?.onSessionEnded($0) },
+            p.onProfileChanged { [weak self] userId, nickname in
+                guard let self else { return }
+                let last = self.profiles.last(userId)
+                self.profiles.put(
+                    UserProfile(
+                        userId: userId, nickname: nickname, avatar: last?.avatar ?? "", official: last?.official ?? false))
+                self.emit(.profileChanged(userId: userId))
+            },
+        ]
+    }
+
+    /// The account session ended. A logout clears the data; anything else goes to login like a kick. Kicks already went
+    /// through `fatal` on the connection.
+    private func onSessionEnded(_ e: SessionEnd) {
+        if e.origin == .kick { return }
+        bindProvider(nil)
+        conn.stop()
+        if e.action == .logout {
+            reset()
+            me = ""
+            return
+        }
+        onFatal(.session(e))
     }
 
     /// Shows a logged-in user's cached data before the connection is up (a cold start while offline).
@@ -267,6 +328,7 @@ public final class IMClient {
 
     /// Logs out: closes with 1000, stops reconnecting, clears memory and the local database (PRD F-AUTH-05, FE-141).
     public func disconnect() {
+        bindProvider(nil)
         conn.stop()
         reset()
         me = ""
@@ -275,6 +337,7 @@ public final class IMClient {
     /// Stops without logging out: the local database stays for the next launch.
     public func close() {
         systemEvents = nil
+        bindProvider(nil)
         conn.stop()
         commit()
         database?.close()
@@ -408,6 +471,7 @@ public final class IMClient {
 
     /// Call when the app's visibility changes (done automatically with `systemEvents`).
     public func visibilityChanged() {
+        if isVisible() { provider?.foreground() }
         maybeReportRead()
         expireMutes()  // Timers may run late after suspension.
     }
@@ -480,6 +544,10 @@ public final class IMClient {
         me = a.userId
         if database == nil { openDatabase(userId: a.userId) }
         serverOffset = a.serverTime - clock.now()
+        if a.recoveryCodeUnacked {
+            provider?.recoveryCodeUnacked()
+            emit(.recoveryCodeUnacked)
+        }
         mutes.setUser(a.mutedUntil)  // Absent means no user-level mute (it may have ended offline).
         mutesChanged()
         purgeOldRequests()
@@ -612,6 +680,11 @@ public final class IMClient {
             mutedUntil = try c.decodeUntil(forKey: .mutedUntil)
         }
     }
+    private struct SecurityNoticeEvent: Decodable {
+        var kind: String
+        var at: Int64
+        var platform: String?
+    }
     private struct SocialChangedEvent: Decodable { var ver: Int64 }
     private struct SettingsChangedEvent: Decodable {
         var mode: SocialMode
@@ -620,6 +693,11 @@ public final class IMClient {
 
     private func onEvent(_ type: String, raw: Data) throws {
         switch type {
+        case "securityNotice":
+            let ev = try decodeFrameData(SecurityNoticeEvent.self, from: raw)
+            if securityNoticeKinds.contains(ev.kind) {
+                emit(.securityNotice(SecurityNotice(kind: ev.kind, at: ev.at, platform: ev.platform)))
+            }
         case "convAdded":
             let ev = try decodeFrameData(ConvAddedEvent.self, from: raw)
             store.upsertConversation(ev.conv)
@@ -854,6 +932,7 @@ public final class IMClient {
     /// Kicked or a non-reconnecting close: sending and queued messages fail (AC-AUTH-03-6), social state and the local
     /// database are cleared (PRD-social 10.2, FE-141), the UI goes back to login.
     private func onFatal(_ r: FatalReason) {
+        bindProvider(nil)
         clearSocial()
         for id in store.allListIds() { failPending(id) }
         destroyDatabase()

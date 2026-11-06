@@ -10,9 +10,11 @@ final class TestServer: @unchecked Sendable {
     static let adminKey = "sdk-it-admin-key-0123456789abcdef"
     private static let callerId = "sdk-it"
     private static let callerSecret = "sdk-it-caller-secret-0123456789abcdef"
-    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve", "group.write", "push.user", "push.all"]
+    private static let callerScopes = ["user.ban", "msg.delete", "mute.write", "social.settings", "group.dissolve", "group.write", "push.user", "push.all", "account.invite", "user.read"]
 
     let wsURL: String
+    /// http://127.0.0.1:port, for the account endpoints.
+    let httpURL: String
     private let adminBase: String
     private let process: Process
 
@@ -122,6 +124,7 @@ final class TestServer: @unchecked Sendable {
         try p.run()
         process = p
         wsURL = "ws://127.0.0.1:\(port)/ws"
+        httpURL = "http://127.0.0.1:\(port)"
         adminBase = "http://127.0.0.1:\(adminPort)"
         let ready = URL(string: "http://127.0.0.1:\(port)/readyz")!
         for i in 0... {
@@ -133,10 +136,13 @@ final class TestServer: @unchecked Sendable {
         }
     }
 
+    /// Only this process: the one started here.
     func stop() {
         process.terminate()
         process.waitUntilExit()
     }
+
+    var pid: Int32 { process.processIdentifier }
 
     /// Calls the admin API with the legacy key (the nine v1.2 endpoints and test-mode routes).
     @discardableResult

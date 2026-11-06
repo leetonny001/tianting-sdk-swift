@@ -44,7 +44,38 @@ im.close()                                                 // 只停止连接，
 
 工具：`c2cConvId`、`groupConvId`、`parseConvIdStrict`、`peerId`、`checkText`、`trimText`、`countCodePoints`、`describeError`、`messageFor`、`ErrorCode`、`CloseCode`、`avatarColorIndex`、`avatarInitial`、`pinyinGroup`。
 
-测试替身：`TiantingIMTesting` 导出 `FakeTransport`、`FakeClock`，界面的测试也可以用。
+测试替身：`TiantingIMTesting` 导出 `FakeTransport`、`FakeClock`、`FakeHttp`、`MemorySessionStore`，界面的测试也可以用。
+
+## 账号（PRD-chat 第 5、13.1 节）
+
+`AccountClient` 是账号 HTTP 接口和账号会话，独立于 `IMClient`。语义和 tianting-sdk-ts 相同，基准是 tianting-server 的 `docs/sdk/README.md` 第 6 节。
+
+```swift
+var o = AccountClientOptions(baseUrl: "https://im.example.com")   // 不带 /v1
+o.store = keychainStore                                    // 实现 AccountSessionStore，见下
+o.unregisterSystemPushToken = { /* C3 接入 APNs 后调 unregisterForRemoteNotifications */ }
+let account = AccountClient(options: o)                    // @MainActor
+account.on { event in
+    if case .ended(let end) = event { backToLogin(end.dialogText()) }   // 有文案就弹窗；end.action == .banNotice 是封禁
+}
+try await account.start()                                  // 读 Keychain，发送待退出；已过期的先刷新
+let r = try await account.login(username: name, password: password)
+if let code = r.recoveryCode { showSavePage(code) ; try await account.ackRecoveryCode(gen: r.recoveryCodeGen!) }
+im.connect(tokenProvider: account.tokenProvider)           // 自动刷新、换 token 重连；im.connect(token:) 是演示模式，行为不变
+```
+
+接口：`register`、`login`、`refresh`、`logout`、`logoutOthers`、`changePassword`、`recover`、`regenerateRecoveryCode`、`ackRecoveryCode`、`updateProfile`、`getConfig`、`listEvents`、`requestDelete`、`cancelDelete`。错误：`AccountError`（服务端的码）、`AccountNetworkError`（没有拿到服务端的码）、`SessionEndedError`。`IMEvent` 增加 `.securityNotice`、`.recoveryCodeUnacked`、`.profileChanged`，`FatalReason` 增加 `.session`，`.kicked` 增加 `recoverBefore`。
+
+**`AccountSessionStore` 的契约**：Session 由 App 的 Keychain 保存，SDK 只回调。
+
+- `save` 返回就表示已经写好。新 token 要等 `save` 返回才使用（R-CF-09），所以这之后杀 App，下次启动用的是服务端认识的值。`save` 抛错时继续用旧值，按退避重试。
+- 恢复码确认之前不调 `save`，存储里的旧值当场 `clear`（RS5-13）。这期间杀 App，下次回登录页。
+- 调用不重叠，按顺序到达。
+- `savePendingLogouts` 只有 `sid` 和 refresh token，**要在 `clear()` 之后还留着**，和 Session 分开存（F-ACC-04 规则 1）。退出时先写记录、清 Session，再发请求，服务端确认或明确拒绝才删；发不出去时留到联网（`networkOnline()`，`systemEvents` 打开时自动）、回前台、下次启动或下次登录再发，失败按退避重试 5 次，最多留 8 条。恢复码还没确认的 token 只有请求失败时才写进来（和 sdk-kotlin 相同）。
+
+`AccountSession` 是 `Codable`，老数据 `{userId, token}` 和没有 `mode` 的都读成 `demo`（R-CF-11）。`AccountSession`、`AuthResult`、`RecoveryCodeResult`、`PendingLogout`、`HttpRequest` 的 `description` 和 `dump` 都不含凭证；日志只有方法、路径、状态码、错误码和动作，没有 URL。
+
+**URLSession 的隐式重试**（第 21 节 16）：`Tests/TiantingIMTests/URLSessionRetryTests.swift` 用真实 socket 数到达的请求（macOS、回环、HTTP/1.1，**没有覆盖 iOS、HTTP/2、HTTP/3、真实网关**）。POST 在新连接、复用连接被关闭或重置、超时、取消时，以及 `503`、`429` 带 `Retry-After: 0`、`408`、`421` 时都只到达 1 次，重定向不跟随；同样场景下 GET 会被重发（3 个请求），说明测试看得见重发。**带 `WWW-Authenticate` 的 401 实测会让 URLSession 再发一次 POST**（默认处理、拒绝保护空间、空凭证都一样），所以 SDK 遇到 HTTP 认证质询直接取消请求，按网络错误处理；服务端不发这个头，**网关不能给 `/v1/` 加这个头**，否则刷新的 4019 会被当成网络错误一直退避。
 
 ## 系统推送（PRD-live v1.1 第 4 节）
 
@@ -91,6 +122,8 @@ swift test --filter TiantingIMIntegrationTests # 集成测试：go build 并启�
 python3 -I scripts/gen-errors/gen_errors.py    # 从 protocol/errors.json 重新生成 ErrorCodes.gen.swift（--check 只比较）
 scripts/sync-protocol.sh                       # 从 tianting-server 检出同步 protocol/，并重新生成错误码
 ```
+
+账号的集成测试（`AccountIntegrationTests`）用 `IM_REGISTER_MODE=invite`、`IM_REFRESH_OVERLAP=61s`、`IM_TEST_DISABLE_AUTH_LOCK=1` 自己启动一个服务端，有一条要真的等一个 61 秒的窗口。
 
 推送的集成测试（`PushIntegrationTests`）自己用 `IM_PUSH_ENABLED=1` 启动一个服务端，开关关闭时的行为在 `PushDisabledIntegrationTests`。
 

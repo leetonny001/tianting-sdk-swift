@@ -10,6 +10,8 @@ public enum FatalReason: Sendable, Equatable {
     /// `recoverBefore` is the deadline for recovering the account (PRD-chat F-ACC-03 rule 6a), in milliseconds.
     case kicked(reason: String, code: Int, until: Until?, recoverBefore: Int64? = nil)
     case closed(code: Int, reason: String)
+    /// The account session ended (`connect(tokenProvider:)`): a refresh got 4019, or access reached the absolute limit.
+    case session(SessionEnd)
 }
 
 struct ConnectionTimings: Sendable {
@@ -57,6 +59,9 @@ final class Connection {
     private var kickedReason: String?
     private var kickedUntil: Until?
     private var kickedRecoverBefore: Int64?
+    private var provider: TokenProvider?
+    private var unsubscribeToken: (@MainActor () -> Void)?
+    private var rejectStreak = 0  // 4011s in a row: the first reconnects at once, the rest back off, to not spin with the server.
     private var reqN = 0
     private var authId = ""
     private var pending: [String: Pending] = [:]
@@ -93,13 +98,48 @@ final class Connection {
         self.random = random
     }
 
-    /// Starts connecting; only updates the token when already active.
+    /// Starts connecting in demo mode, behavior unchanged; only updates the token when already active.
     func start(token: String) {
+        setProvider(nil)
         self.token = token
+        startDialing()
+    }
+
+    /// Starts connecting in account mode (PRD-chat F-ACC-03 rules 5, 7).
+    func start(provider: TokenProvider) {
+        setProvider(provider)
+        startDialing()
+    }
+
+    private func startDialing() {
         if active { return }
         active = true
         attempt = 0
+        rejectStreak = 0
         dial()
+    }
+
+    private func setProvider(_ p: TokenProvider?) {
+        if p === provider { return }
+        unsubscribeToken?()
+        provider = p
+        unsubscribeToken = p?.onTokenChanged { [weak self] in self?.onTokenChanged() }
+    }
+
+    /// The token changed (rule 5): an open connection closes with 1000 and reconnects with the new token at once; one
+    /// waiting on backoff stops waiting. The old connection's callbacks are voided first.
+    private func onTokenChanged() {
+        guard active else { return }
+        if let c = conn {
+            let open = teardown()
+            c.close(code: 1000, reason: "token rotated")
+            setState(.disconnected)
+            dial()
+            failOpen(open)
+        } else if reconnectTimer != nil {
+            clearReconnect()
+            dial()
+        }
     }
 
     /// Logs out: closes with 1000 and never reconnects (PRD F-AUTH-05).
@@ -110,6 +150,7 @@ final class Connection {
         let open = teardown()
         c?.close(code: 1000, reason: "logout")
         setState(.disconnected)
+        setProvider(nil)
         failOpen(open)
     }
 
@@ -176,6 +217,24 @@ final class Connection {
         kickedUntil = nil
         kickedRecoverBefore = nil
         setState(.connecting)
+        guard let provider else {
+            openSocket(gen)
+            return
+        }
+        // Refreshes first when expired (rule 5). A session that ended is not handled here: IMClient gets it from `onEnded`.
+        Task { [weak self] in
+            do {
+                let token = try await provider.accessToken()
+                guard let self, gen == self.connGen, self.active else { return }
+                self.token = token
+                self.openSocket(gen)
+            } catch {
+                self?.logger.debug("im: no token, session ended")
+            }
+        }
+    }
+
+    private func openSocket(_ gen: Int) {
         let full = "\(url)?platform=\(platform.rawValue)"
         conn = transport.open(
             url: full,
@@ -263,6 +322,7 @@ final class Connection {
                 return
             }
             attempt = 0
+            rejectStreak = 0
             setState(.connected)
             scheduleHeartbeat()
             onConnected?(ack)
@@ -324,10 +384,15 @@ final class Connection {
         setState(.disconnected)
         guard active else { return }
 
+        if let provider,
+            onClosedWithProvider(provider, kicked: kicked, known: known, code: code, until: until, recoverBefore: recoverBefore)
+        {
+            return
+        }
+
         // Kicked never reconnects (PRD F-AUTH-03 rule 4), except a server shutdown (C-55).
         if let kicked, kicked != "serverShutdown" {
-            active = false
-            onFatal?(.kicked(reason: kicked, code: code, until: until, recoverBefore: recoverBefore))
+            emitKicked(kicked, code: code, until: until, recoverBefore: recoverBefore)
             return
         }
         // 1000, 4009...4012 and 4429 never reconnect; unlisted codes (1006...) may.
@@ -337,6 +402,61 @@ final class Connection {
             return
         }
         scheduleReconnect()
+    }
+
+    private func emitKicked(_ reason: String, code: Int, until: Until?, recoverBefore: Int64?) {
+        active = false
+        onFatal?(.kicked(reason: reason, code: code, until: until, recoverBefore: recoverBefore))
+    }
+
+    /// Closing in account mode: 4011 follows rule 7; 4010 and 4012 go to the account session, which can hold them while a
+    /// password change is in flight (F-ACC-04 rule 3). Returns true when handled.
+    private func onClosedWithProvider(
+        _ provider: TokenProvider, kicked: String?, known: Bool, code: Int, until: Until?, recoverBefore: Int64?
+    ) -> Bool {
+        if kicked == "tokenExpired" || (!known && code == 4011) {
+            onTokenRejected(provider)
+            return true
+        }
+        if kicked == "serverShutdown" { return false }
+        if !known, code != 4010, code != 4012 { return false }
+        let info = KickInfo(reason: known ? kicked : nil, code: code, recoverBefore: recoverBefore)
+        provider.kickReceived(info) { [weak self] decision in
+            guard let self, self.active, self.provider === provider else { return }
+            switch decision {
+            case .ignore:
+                self.dial()  // The old `sid`'s kick: the token is already new, reconnect now; no banner within 1 second.
+            case .pass:
+                if let kicked {
+                    self.emitKicked(kicked, code: code, until: until, recoverBefore: recoverBefore)
+                } else {
+                    self.active = false
+                    self.onFatal?(.closed(code: code, reason: ""))
+                }
+            }
+        }
+        return true
+    }
+
+    /// Rule 7: wait until the token source has a newer token (at once when the local one is newer, otherwise one refresh),
+    /// then reconnect. A session that ended reaches IMClient through `onEnded`.
+    private func onTokenRejected(_ provider: TokenProvider) {
+        let gen = connGen
+        let rejected = token
+        rejectStreak += 1
+        Task { [weak self] in
+            do {
+                try await provider.tokenRejected(rejected)
+                guard let self, gen == self.connGen, self.active, self.provider === provider else { return }
+                if self.rejectStreak <= 1 {
+                    self.dial()
+                } else if self.reconnectTimer == nil {
+                    self.scheduleReconnect()
+                }
+            } catch {
+                self?.logger.debug("im: token rejected, session ended")
+            }
+        }
     }
 
     /// Backoff 1, 2, 4... up to 30 seconds (the cap applies before jitter, C-22), then +-jitter.
@@ -387,6 +507,7 @@ final class Connection {
     private func setState(_ s: ConnState) {
         guard s != state else { return }
         state = s
+        provider?.connectionChanged(s == .connected)
         onState?(s)
     }
 }
