@@ -10,7 +10,8 @@ public enum FatalReason: Sendable, Equatable {
     /// `recoverBefore` is the deadline for recovering the account (PRD-chat F-ACC-03 rule 6a), in milliseconds.
     case kicked(reason: String, code: Int, until: Until?, recoverBefore: Int64? = nil)
     case closed(code: Int, reason: String)
-    /// The account session ended (`connect(tokenProvider:)`): a refresh got 4019, or access reached the absolute limit.
+    /// The account session ended (`connect(tokenProvider:)`): a refresh got 4019, access reached the absolute limit, or it
+    /// had already ended when connecting (issue K7).
     case session(SessionEnd)
 }
 
@@ -221,7 +222,8 @@ final class Connection {
             openSocket(gen)
             return
         }
-        // Refreshes first when expired (rule 5). A session that ended is not handled here: IMClient gets it from `onEnded`.
+        // Refreshes first when expired (rule 5). A session ending during the wait reaches IMClient through `onEnded`, which
+        // stops this connection, so nothing happens here.
         Task { [weak self] in
             do {
                 let token = try await provider.accessToken()
@@ -229,9 +231,20 @@ final class Connection {
                 self.token = token
                 self.openSocket(gen)
             } catch {
-                self?.logger.debug("im: no token, session ended")
+                guard let self else { return }
+                self.logger.debug("im: no token, session ended")
+                if gen == self.connGen, self.active, self.provider === provider { self.emitNoSession(error) }
             }
         }
+    }
+
+    /// The session had already ended when connecting (issue K7): no `onEnded` will come, so do not stay connecting.
+    private func emitNoSession(_ error: Error) {
+        var end = (error as? SessionEndedError)?.end ?? SessionEnd(action: .login)
+        end.origin = nil
+        active = false
+        setState(.disconnected)
+        onFatal?(.session(end))
     }
 
     private func openSocket(_ gen: Int) {

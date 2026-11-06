@@ -32,9 +32,14 @@ public enum AccountNetworkError: Error, Sendable, Equatable {
     case saveFailed
 }
 
-/// No usable account session: not logged in, or it ended (`.ended`).
+/// No usable account session: not logged in, or it ended (`.ended`). `end`: when `accessToken()` throws, the most recent
+/// end; nil when there never was a session.
 public struct SessionEndedError: Error, Sendable, Equatable {
-    public init() {}
+    public var end: SessionEnd?
+
+    public init(end: SessionEnd? = nil) {
+        self.end = end
+    }
 }
 
 // MARK: - Session
@@ -416,6 +421,7 @@ public final class AccountClient {
     private var queue: [@MainActor () -> Void] = []
     private var refreshQueued = false
     private var epoch = 0  // Up by one each time a session ends: a late response cannot revive it.
+    private var lastEnd: SessionEnd?  // The most recent end; cleared by a new session (issue K7).
 
     private var holdDepth = 0  // A `sid`-changing operation is in flight (F-ACC-04 rule 3).
     private var heldKicks: [(info: KickInfo, decide: @MainActor (KickDecision) -> Void)] = []
@@ -513,6 +519,7 @@ public final class AccountClient {
         current = saved
         lineage = lineageOf(saved.accessToken)
         shortOnArrival = false
+        lastEnd = nil
         resetFailures()
         armLifeTimer()
     }
@@ -755,6 +762,7 @@ public final class AccountClient {
     private func adopt(_ next: AccountSession, recoveryCodeUnacked: Bool, fromRefresh: Bool = false) {
         current = next
         lineage = lineageOf(next.accessToken)
+        lastEnd = nil
         shortOnArrival =
             fromRefresh
             && shouldRefresh(accessExpiresAt: next.accessExpiresAt, absoluteExpiresAt: next.absoluteExpiresAt, now: clock.now())
@@ -827,7 +835,7 @@ public final class AccountClient {
     // MARK: The token source (HTTP and WS share it, RS5-10)
 
     fileprivate func accessToken() async throws -> String {
-        guard let s = current else { throw SessionEndedError() }
+        guard let s = current else { throw SessionEndedError(end: lastEnd) }
         if s.mode == .account, !shortOnArrival, clock.now() >= s.accessExpiresAt {
             if s.accessExpiresAt == s.absoluteExpiresAt {
                 endSession(SessionEnd(action: .login, dialog: .sessionExpired, reason: "expired"))
@@ -1394,6 +1402,7 @@ public final class AccountClient {
         guard current != nil else { return }
         epoch += 1
         current = nil
+        lastEnd = e
         memoryOnly = false
         shortOnArrival = false
         abandonRefresh()

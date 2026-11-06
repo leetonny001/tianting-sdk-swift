@@ -55,7 +55,8 @@ public struct SessionEnd: Sendable, Equatable {
 /// source). `AccountClient.tokenProvider` implements it. `connect(token:)` has none of this (demo mode).
 @MainActor
 public protocol TokenProvider: AnyObject {
-    /// Called before dialing. Refreshes first when expired; throws when the session ended.
+    /// Called before dialing. Refreshes first when expired; throws `SessionEndedError` when the session ended, and the
+    /// connection emits a session fatal (issue K7).
     func accessToken() async throws -> String
     /// The connection got `kicked/tokenExpired` or close code 4011 (rule 7). After it returns, `accessToken()` is
     /// usable; throws when the session ended.
