@@ -141,3 +141,97 @@ public final class FakeTransport: IMTransport {
         return c
     }
 }
+
+/// One fake HTTP request: the test decides when and how it ends, late responses included.
+@MainActor
+public final class FakeHttpCall {
+    public let request: HttpRequest
+    public private(set) var settled = false
+    private var continuation: UnsafeContinuation<HttpResponse, Error>?
+
+    init(request: HttpRequest, continuation: UnsafeContinuation<HttpResponse, Error>) {
+        self.request = request
+        self.continuation = continuation
+    }
+
+    /// The URL's path, without the host.
+    public var path: String { URLComponents(string: request.url)?.path ?? request.url }
+
+    /// The parsed request body; empty when there is none.
+    public var json: JSONValue {
+        guard let body = request.body, let v = try? JSONDecoder().decode(JSONValue.self, from: body) else { return [:] }
+        return v
+    }
+
+    public var bearer: String? {
+        request.headers["Authorization"].map { $0.replacingOccurrences(of: "Bearer ", with: "") }
+    }
+
+    /// Answers with a JSON body. Answering a settled call does nothing, like a late response on a real network.
+    public func respond(_ status: Int, _ body: JSONValue = [:]) {
+        respond(status, text: body.jsonString())
+    }
+
+    public func respond(_ status: Int, text: String) {
+        settled = true
+        continuation?.resume(returning: HttpResponse(status: status, body: Data(text.utf8)))
+        continuation = nil
+    }
+
+    /// Answers with the server's error shape, `ErrorResponse`.
+    public func respondError(
+        _ status: Int, _ code: Int, reason: String? = nil, details: [String: JSONValue]? = nil, msg: String = "error"
+    ) {
+        var o: [String: JSONValue] = ["code": .int(Int64(code)), "msg": .string(msg)]
+        if let reason { o["reason"] = .string(reason) }
+        if let details { o["details"] = .object(details) }
+        respond(status, .object(o))
+    }
+
+    /// Simulates a network error. The message can carry a URL, as real errors do; the SDK must not pass it on.
+    public func fail(_ message: String = "network error") {
+        settled = true
+        continuation?.resume(throwing: FakeHttpError(message: message))
+        continuation = nil
+    }
+}
+
+public struct FakeHttpError: Error, CustomStringConvertible {
+    public let message: String
+    public var description: String { message }
+}
+
+/// A fake HTTP transport (PRD-chat 4.5; `FakeTransport` only has the WebSocket): records every request and leaves it
+/// open for the test. `onRequest` answers automatically, to build a fake server. Cancellation is ignored on purpose: an
+/// abandoned request can still get a late response, which the SDK has to drop.
+@MainActor
+public final class FakeHttp: HttpTransport {
+    public private(set) var calls: [FakeHttpCall] = []
+    public var onRequest: (@MainActor (FakeHttpCall) -> Void)?
+
+    public init() {}
+
+    public func request(_ request: HttpRequest) async throws -> HttpResponse {
+        try await withUnsafeThrowingContinuation { (cont: UnsafeContinuation<HttpResponse, Error>) in
+            let call = FakeHttpCall(request: request, continuation: cont)
+            calls.append(call)
+            onRequest?(call)
+        }
+    }
+
+    /// Every request to a path, in the order sent.
+    public func to(_ path: String) -> [FakeHttpCall] {
+        calls.filter { $0.path == path }
+    }
+
+    /// The last request to a path.
+    public func last(_ path: String) -> FakeHttpCall {
+        guard let c = to(path).last else { fatalError("no request to \(path)") }
+        return c
+    }
+
+    /// Requests not answered yet.
+    public var pending: [FakeHttpCall] {
+        calls.filter { !$0.settled }
+    }
+}

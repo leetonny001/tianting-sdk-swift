@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://im-mvp.local/protocol/http-client.schema.json",
+  "title": "客户端 HTTP 接口（/v1）",
+  "description": "PRD-chat 第 4.2、11.2 节，本批 C1 账号部分；文件接口随 BE-401。请求和响应都可能增加字段，收到不认识的字段要忽略，所以请求和响应对象都不写 additionalProperties:false。错误响应一律 ErrorResponse，HTTP 状态取 errors.json。认证用 Authorization: Bearer，token 不进 URL。",
+  "$defs": {
+    "UserId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{3,31}$",
+      "description": "账号的 userId，就是规范化后的用户名"
+    },
+    "RefreshToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[1-9][0-9]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$",
+      "description": "kid.sid.gen.nonce.mac（PRD-chat F-ACC-03 规则 3）"
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "required": [
+        "code",
+        "msg"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "msg": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    },
+    "ConfigResponse": {
+      "type": "object",
+      "required": [
+        "registerMode",
+        "demoLogin",
+        "features",
+        "limits"
+      ],
+      "properties": {
+        "registerMode": {
+          "enum": [
+            "closed",
+            "invite",
+            "open"
+          ]
+        },
+        "demoLogin": {
+          "type": "boolean"
+        },
+        "features": {
+          "type": "object",
+          "required": [
+            "files"
+          ],
+          "properties": {
+            "files": {
+              "type": "boolean"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": [
+            "usernameMinLen",
+            "usernameMaxLen",
+            "passwordMinLen",
+            "passwordMaxLen",
+            "nicknameMaxLen",
+            "deviceNameMaxLen"
+          ],
+          "properties": {
+            "usernameMinLen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "usernameMaxLen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passwordMinLen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "passwordMaxLen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nicknameMaxLen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deviceNameMaxLen": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "privacyNotice": {
+          "type": "object",
+          "required": [
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "RegisterRequest": {
+      "type": "object",
+      "required": [
+        "username",
+        "password",
+        "platform"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "nickname": {
+          "type": "string"
+        },
+        "inviteCode": {
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "android",
+            "ios",
+            "web",
+            "pc"
+          ]
+        },
+        "deviceName": {
+          "type": "string"
+        }
+      }
+    },
+    "LoginRequest": {
+      "type": "object",
+      "required": [
+        "username",
+        "password",
+        "platform"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "android",
+            "ios",
+            "web",
+            "pc"
+          ]
+        },
+        "deviceName": {
+          "type": "string"
+        }
+      }
+    },
+    "RecoverRequest": {
+      "type": "object",
+      "required": [
+        "username",
+        "recoveryCode",
+        "newPassword",
+        "platform"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "recoveryCode": {
+          "type": "string"
+        },
+        "newPassword": {
+          "type": "string"
+        },
+        "platform": {
+          "enum": [
+            "android",
+            "ios",
+            "web",
+            "pc"
+          ]
+        },
+        "deviceName": {
+          "type": "string"
+        }
+      }
+    },
+    "PasswordRequest": {
+      "type": "object",
+      "required": [
+        "oldPassword",
+        "newPassword"
+      ],
+      "properties": {
+        "oldPassword": {
+          "type": "string"
+        },
+        "newPassword": {
+          "type": "string"
+        }
+      }
+    },
+    "PasswordOnlyRequest": {
+      "type": "object",
+      "required": [
+        "password"
+      ],
+      "properties": {
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "RefreshRequest": {
+      "type": "object",
+      "required": [
+        "refreshToken"
+      ],
+      "properties": {
+        "refreshToken": {
+          "$ref": "#/$defs/RefreshToken"
+        }
+      }
+    },
+    "LogoutRequest": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "refreshToken": {
+          "$ref": "#/$defs/RefreshToken"
+        }
+      }
+    },
+    "DeleteCancelRequest": {
+      "type": "object",
+      "required": [
+        "username",
+        "password"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "RecoveryCodeAckRequest": {
+      "type": "object",
+      "required": [
+        "gen"
+      ],
+      "properties": {
+        "gen": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "ProfileRequest": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "nickname": {
+          "type": "string"
+        },
+        "avatarFileId": {
+          "type": "string"
+        }
+      }
+    },
+    "AuthResponse": {
+      "type": "object",
+      "required": [
+        "userId",
+        "accessToken",
+        "accessExpiresAt",
+        "refreshToken",
+        "refreshExpiresAt",
+        "absoluteExpiresAt"
+      ],
+      "properties": {
+        "userId": {
+          "$ref": "#/$defs/UserId"
+        },
+        "accessToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accessExpiresAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refreshToken": {
+          "$ref": "#/$defs/RefreshToken"
+        },
+        "refreshExpiresAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "absoluteExpiresAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recoveryCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recoveryCodeGen": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recoveryCodeUnacked": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EventsResponse": {
+      "type": "object",
+      "required": [
+        "events",
+        "otherSessions"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "at"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "at": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "platform": {
+                "enum": [
+                  "android",
+                  "ios",
+                  "web",
+                  "pc"
+                ]
+              },
+              "ipPrefix": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "otherSessions": {
+          "type": "object",
+          "required": [
+            "count"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "lastActiveAt": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "recoveryCodeUnacked": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RecoveryCodeResponse": {
+      "type": "object",
+      "required": ["recoveryCode", "recoveryCodeGen"],
+      "properties": {
+        "recoveryCode": { "type": "string", "minLength": 1 },
+        "recoveryCodeGen": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "Empty": {
+      "type": "object"
+    }
+  },
+  "endpoints": {
+    "GET /v1/config": {
+      "auth": "none",
+      "response": "ConfigResponse",
+      "task": "BE-411"
+    },
+    "POST /v1/account/register": {
+      "auth": "none",
+      "request": "RegisterRequest",
+      "response": "AuthResponse",
+      "task": "BE-413"
+    },
+    "POST /v1/account/login": {
+      "auth": "none",
+      "request": "LoginRequest",
+      "response": "AuthResponse",
+      "task": "BE-414"
+    },
+    "GET /v1/account/events": {
+      "auth": "bearer+sid",
+      "response": "EventsResponse",
+      "task": "BE-414"
+    },
+    "POST /v1/account/token/refresh": {
+      "auth": "none",
+      "request": "RefreshRequest",
+      "response": "AuthResponse",
+      "task": "BE-415"
+    },
+    "POST /v1/account/logout": {
+      "auth": "bearer-or-refresh",
+      "request": "LogoutRequest",
+      "response": "Empty",
+      "task": "BE-417"
+    },
+    "POST /v1/account/logout-others": {
+      "auth": "bearer+sid",
+      "request": "PasswordOnlyRequest",
+      "response": "AuthResponse",
+      "task": "BE-417"
+    },
+    "POST /v1/account/password": {
+      "auth": "bearer+sid",
+      "request": "PasswordRequest",
+      "response": "AuthResponse",
+      "task": "BE-417"
+    },
+    "POST /v1/account/recover": {
+      "auth": "none",
+      "request": "RecoverRequest",
+      "response": "AuthResponse",
+      "task": "BE-418"
+    },
+    "POST /v1/account/recovery-code": {
+      "auth": "bearer+sid",
+      "request": "PasswordOnlyRequest",
+      "response": "RecoveryCodeResponse",
+      "task": "BE-418"
+    },
+    "POST /v1/account/recovery-code/ack": {
+      "auth": "bearer+sid",
+      "request": "RecoveryCodeAckRequest",
+      "response": "Empty",
+      "task": "BE-418"
+    },
+    "PATCH /v1/account/profile": {
+      "auth": "bearer+sid",
+      "request": "ProfileRequest",
+      "response": "Empty",
+      "task": "BE-419"
+    },
+    "POST /v1/account/delete": {
+      "auth": "bearer+sid",
+      "request": "PasswordOnlyRequest",
+      "response": "Empty",
+      "task": "BE-420"
+    },
+    "POST /v1/account/delete/cancel": {
+      "auth": "none",
+      "request": "DeleteCancelRequest",
+      "response": "Empty",
+      "task": "BE-420"
+    }
+  }
+}

@@ -2184,6 +2184,10 @@
               "type": "integer",
               "minimum": 0,
               "description": "这个用户分配过的最大 pushSeq，不随清理回退"
+            },
+            "recoveryCodeUnacked": {
+              "type": "boolean",
+              "description": "auth：账号最新一代恢复码没有确认时才出现（PRD-chat F-ACC-05 规则 1）"
             }
           },
           "additionalProperties": false
@@ -2262,6 +2266,9 @@
                     "suspended",
                     "tooManyConnections",
                     "serverShutdown",
+                    "passwordChanged",
+                    "sessionRevoked",
+                    "accountDeleted",
                     "replaced"
                   ]
                 },
@@ -2275,6 +2282,10 @@
                     }
                   ],
                   "description": "只在 reason=suspended 时出现：封禁到期时间，永久为 null（第二批）"
+                },
+                "recoverBefore": {
+                  "$ref": "#/$defs/TimestampMs",
+                  "description": "可选：账号存在未过期、没用过、没作废的已确认旧恢复码时，最早的 retire_until（PRD-chat F-ACC-03 规则 6a）。只在 passwordChanged、sessionRevoked、accountDeleted 时出现"
                 }
               },
               "additionalProperties": false
@@ -2508,6 +2519,38 @@
                 },
                 "groupId": {
                   "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "kind",
+                "at",
+                "platform"
+              ],
+              "properties": {
+                "type": {
+                  "const": "securityNotice"
+                },
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "PRD-chat F-ACC-02 规则 3b。客户端忽略不认识的取值。本批：newDeviceLogin"
+                },
+                "at": {
+                  "$ref": "#/$defs/TimestampMs"
+                },
+                "platform": {
+                  "enum": [
+                    "android",
+                    "ios",
+                    "web",
+                    "pc"
+                  ],
+                  "description": "触发这条提醒的设备平台"
                 }
               },
               "additionalProperties": false

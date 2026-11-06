@@ -19,7 +19,7 @@ final class ModerationIntegrationTests: IntegrationCase {
         try await srv.signed("POST", "/admin/users/\(u)/ban", ["durationSeconds": 86_400, "reason": "it"])
         try await untilTrue("both kicked") { !la.fatal.isEmpty && !lb.fatal.isEmpty }
         for r in la.fatal + lb.fatal {
-            guard case .kicked(let reason, let code, let banEnd) = r, case .at(let when)? = banEnd else {
+            guard case .kicked(let reason, let code, let banEnd, _) = r, case .at(let when)? = banEnd else {
                 return XCTFail("unexpected \(r)")
             }
             XCTAssertEqual(reason, "suspended")
@@ -34,7 +34,7 @@ final class ModerationIntegrationTests: IntegrationCase {
         let lateLog = EventLog(late)
         late.connect(token: oldToken)
         try await untilTrue("old token kicked") { !lateLog.fatal.isEmpty }
-        guard case .kicked("suspended", 4012, _) = lateLog.fatal[0] else {
+        guard case .kicked("suspended", 4012, _, _) = lateLog.fatal[0] else {
             return XCTFail("unexpected \(lateLog.fatal[0])")
         }
     }

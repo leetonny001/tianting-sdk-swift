@@ -7,7 +7,8 @@ public enum ConnState: String, Sendable {
 /// Why the connection stopped for good: kicked, or a close code that must not reconnect (1000, 4009...4012, 4429).
 public enum FatalReason: Sendable, Equatable {
     /// `until` is only present for `suspended`: the ban's end, or `.permanent`.
-    case kicked(reason: String, code: Int, until: Until?)
+    /// `recoverBefore` is the deadline for recovering the account (PRD-chat F-ACC-03 rule 6a), in milliseconds.
+    case kicked(reason: String, code: Int, until: Until?, recoverBefore: Int64? = nil)
     case closed(code: Int, reason: String)
 }
 
@@ -55,6 +56,7 @@ final class Connection {
     private var pongTimer: TimerHandle?
     private var kickedReason: String?
     private var kickedUntil: Until?
+    private var kickedRecoverBefore: Int64?
     private var reqN = 0
     private var authId = ""
     private var pending: [String: Pending] = [:]
@@ -172,6 +174,7 @@ final class Connection {
         let gen = connGen
         kickedReason = nil
         kickedUntil = nil
+        kickedRecoverBefore = nil
         setState(.connecting)
         let full = "\(url)?platform=\(platform.rawValue)"
         conn = transport.open(
@@ -210,11 +213,13 @@ final class Connection {
         struct Body: Decodable {
             var reason: String?
             var until: Until?
-            private enum CodingKeys: String, CodingKey { case reason, until }
+            var recoverBefore: Int64?
+            private enum CodingKeys: String, CodingKey { case reason, until, recoverBefore }
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 reason = c.value(.reason, default: nil)
                 until = (try? c.decodeUntil(forKey: .until)) ?? nil
+                recoverBefore = c.value(.recoverBefore, default: nil)
             }
         }
         var data: Body
@@ -238,6 +243,7 @@ final class Connection {
                 let k = (try? JSONCoding.decoder.decode(KickedFrame.self, from: raw))?.data
                 kickedReason = k?.reason ?? ""
                 kickedUntil = k?.until
+                kickedRecoverBefore = k?.recoverBefore
                 return
             }
             onFrame?(InboundFrame(cmd: cmd, eventType: type, raw: raw))
@@ -304,8 +310,14 @@ final class Connection {
     }
 
     private func onClosed(code: Int, reason: String) {
-        let kicked = kickedReason
+        // An unknown kick reason (PRD-chat F-ACC-04 rule 5, PRD-core 3.1): ignored when the close code may reconnect;
+        // otherwise the close code settles it and the reason goes to the UI as sent.
+        let raw = kickedReason
+        let known = raw.map { kickCloseCode[$0] != nil } ?? false
+        let kicked = (known || closeReconnect[code] == false) ? raw : nil
+        if raw != nil, !known { logger.warn("im: unknown kick reason, close code \(code)") }
         let until = kickedUntil
+        let recoverBefore = kickedRecoverBefore
         let open = teardown()
         // Open requests fail last, so their handlers see the outcome: a kick wins over "connection closed".
         defer { failOpen(open) }
@@ -315,7 +327,7 @@ final class Connection {
         // Kicked never reconnects (PRD F-AUTH-03 rule 4), except a server shutdown (C-55).
         if let kicked, kicked != "serverShutdown" {
             active = false
-            onFatal?(.kicked(reason: kicked, code: code, until: until))
+            onFatal?(.kicked(reason: kicked, code: code, until: until, recoverBefore: recoverBefore))
             return
         }
         // 1000, 4009...4012 and 4429 never reconnect; unlisted codes (1006...) may.

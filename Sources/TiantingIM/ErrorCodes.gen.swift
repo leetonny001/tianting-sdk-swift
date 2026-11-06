@@ -17,6 +17,9 @@ public enum ErrorCode {
     public static let tokenRevoked = 4012
     public static let adminKeyInvalid = 4013
     public static let adminSignatureInvalid = 4017
+    public static let accountCredentialsInvalid = 4018
+    public static let refreshTokenInvalid = 4019
+    public static let fileNotFound = 4048
     public static let forbidden = 4030
     public static let muted = 4031
     public static let notConvParticipant = 4032
@@ -35,6 +38,7 @@ public enum ErrorCode {
     public static let groupExists = 4090
     public static let friendRequestHandled = 4091
     public static let pushIdConflict = 4094
+    public static let usernameTaken = 4095
     public static let groupMemberLimitExceeded = 4130
     public static let batchLimitExceeded = 4131
     public static let friendLimitExceeded = 4132
@@ -45,6 +49,7 @@ public enum ErrorCode {
     public static let strangerMsgLimit = 4137
     public static let rateLimited = 4290
     public static let quotaExceeded = 4292
+    public static let accountLoginLocked = 4294
     public static let `internal` = 5000
     public static let serviceUnavailable = 5030
 }
@@ -71,11 +76,14 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4012: ErrorInfo(name: "TOKEN_REVOKED", retryable: false, message: "账号已被强制下线"),
     4013: ErrorInfo(name: "ADMIN_KEY_INVALID", retryable: false, message: "管理密钥无效"),
     4017: ErrorInfo(name: "ADMIN_SIGNATURE_INVALID", retryable: false, message: "管理接口签名无效"),
+    4018: ErrorInfo(name: "ACCOUNT_CREDENTIALS_INVALID", retryable: false, message: "用户名、密码或恢复码错误（不区分）"),
+    4019: ErrorInfo(name: "REFRESH_TOKEN_INVALID", retryable: false, message: "refresh token 无效、过期、吊销或被重放"),
+    4048: ErrorInfo(name: "FILE_NOT_FOUND", retryable: false, message: "文件不存在、无权访问、已过期或已撤回（不区分）"),
     4030: ErrorInfo(name: "FORBIDDEN", retryable: false, message: "无权限"),
     4031: ErrorInfo(name: "MUTED", retryable: false, message: "被禁言，不能发言"),
     4032: ErrorInfo(name: "NOT_CONV_PARTICIPANT", retryable: false, message: "不是该会话的参与者"),
     4033: ErrorInfo(name: "NOT_GROUP_MEMBER", retryable: false, message: "不是群成员"),
-    4034: ErrorInfo(name: "USER_BANNED", retryable: false, message: "用户被封禁，不能签发 token / 演示登录（details.bannedUntil，永久为 null）"),
+    4034: ErrorInfo(name: "USER_BANNED", retryable: false, message: "用户被封禁，不能签发 token / 演示登录 / 账号登录（details.bannedUntil，永久为 null）"),
     4035: ErrorInfo(name: "NOT_FRIEND", retryable: false, message: "不是好友"),
     4036: ErrorInfo(name: "REJECTED_BY_PEER", retryable: false, message: "消息被对方拒收"),
     4039: ErrorInfo(name: "MSG_READ_GRANT_REQUIRED", retryable: false, message: "没有该会话有效的正文 / 隔离原文查看授权"),
@@ -89,6 +97,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4090: ErrorInfo(name: "GROUP_EXISTS", retryable: false, message: "群 ID 已存在"),
     4091: ErrorInfo(name: "FRIEND_REQUEST_HANDLED", retryable: false, message: "申请已同意"),
     4094: ErrorInfo(name: "PUSH_ID_CONFLICT", retryable: false, message: "同一 pushId 的调用方或内容不同"),
+    4095: ErrorInfo(name: "USERNAME_TAKEN", retryable: false, message: "用户名已存在或保留"),
     4130: ErrorInfo(name: "GROUP_MEMBER_LIMIT_EXCEEDED", retryable: false, message: "群成员已达上限"),
     4131: ErrorInfo(name: "BATCH_LIMIT_EXCEEDED", retryable: false, message: "单次批量操作数量超限"),
     4132: ErrorInfo(name: "FRIEND_LIMIT_EXCEEDED", retryable: false, message: "好友数量已达上限"),
@@ -99,8 +108,38 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4137: ErrorInfo(name: "STRANGER_MSG_LIMIT", retryable: false, message: "对方回复前的条数已用完"),
     4290: ErrorInfo(name: "RATE_LIMITED", retryable: true, message: "操作过于频繁"),
     4292: ErrorInfo(name: "QUOTA_EXCEEDED", retryable: false, message: "今天的次数已用完"),
+    4294: ErrorInfo(name: "ACCOUNT_LOGIN_LOCKED", retryable: false, message: "尝试过多，暂时锁定（details.retryAfterSeconds）"),
     5000: ErrorInfo(name: "INTERNAL", retryable: true, message: "服务器内部错误"),
     5030: ErrorInfo(name: "SERVICE_UNAVAILABLE", retryable: true, message: "服务暂不可用"),
+]
+
+/// Codes the account and file HTTP endpoints return (`client` scope, PRD-chat 11.5, F-SYS-01).
+public let clientErrorCodes: [Int] = [
+    4000,
+    4004,
+    4010,
+    4011,
+    4012,
+    4018,
+    4019,
+    4048,
+    4030,
+    4034,
+    4095,
+    4290,
+    4292,
+    4294,
+    5000,
+    5030,
+]
+
+/// Error code -> the reasons that refine it (PRD-chat 11.5). A reason not listed here must not raise an error.
+public let errorReasons: [Int: [String]] = [
+    4000: ["passwordWeak", "recoveryCodeStale"],
+    4011: ["tokenSuperseded"],
+    4019: ["invalid", "expired", "revoked", "superseded", "replayDetected", "credentialsChanged", "loggedOutOthers", "accountDeleted"],
+    4030: ["registerClosed", "inviteInvalid", "accountSessionRequired", "accountExists", "accountDeletionPending", "featureDisabled"],
+    4290: ["recoverLimited"],
 ]
 
 /// WebSocket close codes.
@@ -141,6 +180,9 @@ public let kickCloseCode: [String: Int?] = [
     "tokenExpired": 4011,
     "banned": 4012,
     "suspended": 4012,
+    "passwordChanged": 4012,
+    "sessionRevoked": 4012,
+    "accountDeleted": 4012,
     "tooManyConnections": 4429,
     "serverShutdown": 1001,
     "replaced": nil,

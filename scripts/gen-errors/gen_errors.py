@@ -53,6 +53,11 @@ def render(spec: dict) -> str:
         f"retryable: {'true' if e['retryable'] else 'false'}, message: {swift_str(e['message'])}),"
         for e in errors
     ]
+    lines += ["]", "", "/// Codes the account and file HTTP endpoints return (`client` scope, PRD-chat 11.5, F-SYS-01).", "public let clientErrorCodes: [Int] = ["]
+    lines += [f"    {e['code']}," for e in errors if "client" in e["scope"]]
+    lines += ["]", "", "/// Error code -> the reasons that refine it (PRD-chat 11.5). A reason not listed here must not raise an error.", "public let errorReasons: [Int: [String]] = ["]
+    reasons = {k: v for k, v in spec.get("reasons", {}).items() if k != "$comment"}
+    lines += [f"    {k}: [{', '.join(swift_str(r) for r in v)}]," for k, v in reasons.items()]
     lines += ["]", "", "/// WebSocket close codes.", "public enum CloseCode {"]
     lines += [f"    public static let {camel(c['name'])} = {c['code']}" for c in spec["closeCodes"]]
     lines += [

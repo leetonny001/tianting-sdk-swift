@@ -12,6 +12,15 @@ final class SchemaValidator: @unchecked Sendable {
         self.root = root
     }
 
+    /// `protocol/schema/http-client.schema.json`.
+    static func http() throws -> SchemaValidator {
+        if let c = cachedHttp { return c }
+        let v = SchemaValidator(root: try loadJSON("schema/http-client.schema.json"))
+        cachedHttp = v
+        return v
+    }
+    nonisolated(unsafe) private static var cachedHttp: SchemaValidator?
+
     static func shared() throws -> SchemaValidator {
         if let c = cached { return c }
         let v = SchemaValidator(root: try loadJSON("schema/frame.schema.json"))
@@ -21,6 +30,11 @@ final class SchemaValidator: @unchecked Sendable {
 
     func isValid(_ value: JSONValue) -> Bool {
         check(value, root)
+    }
+
+    /// Checks against a definition in the same file, e.g. `#/$defs/AuthResponse`.
+    func isValid(_ value: JSONValue, ref: String) -> Bool {
+        check(value, resolve(ref))
     }
 
     private static let handled: Set<String> = [
