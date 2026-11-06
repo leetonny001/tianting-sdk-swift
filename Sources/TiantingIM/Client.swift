@@ -93,8 +93,11 @@ public struct SecurityNotice: Sendable, Equatable {
     public let platform: String?
 }
 
-/// The security notices this batch knows (server/internal/protocol/frames.go).
-private let securityNoticeKinds: Set<String> = ["newDeviceLogin", "recoveryCodeRegenerated", "refreshReplay", "refreshRateLimited"]
+/// The security notices this batch knows: all the server sends (the `notify` calls in server/internal/account).
+private let securityNoticeKinds: Set<String> = [
+    "newDeviceLogin", "passwordChanged", "passwordRecovered", "recoveryCodeRegenerated", "refreshReplay", "refreshRateLimited",
+    "newIpPrefix",
+]
 
 public enum SendResult: Sendable, Equatable {
     case ok(Message)

@@ -377,6 +377,9 @@ final class AccountIntegrationTests: XCTestCase {
         guard case .kicked("passwordChanged", 4012, _, let before?)? = d2.fatal.first else {
             return XCTFail("d2 fatal \(d2.fatal)")
         }
+        // F-ACC-05 rule 5: the other device gets the notice first, the initiating one gets none (issue table A13, A14).
+        XCTAssertEqual(d2.notices.map(\.kind), ["passwordChanged"])
+        XCTAssertEqual(d1.notices.map(\.kind), [])
         XCTAssertGreaterThan(before, Int64(Date().timeIntervalSince1970 * 1000))
         XCTAssertEqual(d2.ended.first?.dialog, .recoverBefore)
         XCTAssertEqual(d2.ended.first?.recoverBefore, before)

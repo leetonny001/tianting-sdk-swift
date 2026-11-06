@@ -1789,8 +1789,11 @@ final class AccountOtherTests: AccountTestCase {
         let c = await h.online()
         var got: [String] = []
         h.im.on { if case .securityNotice(let n) = $0 { got.append(n.kind) } }
-        let kinds = ["newDeviceLogin", "recoveryCodeRegenerated", "refreshReplay", "refreshRateLimited"]
-        for k in kinds + ["newIpPrefix", ""] {
+        let kinds = [
+            "newDeviceLogin", "passwordChanged", "passwordRecovered", "recoveryCodeRegenerated", "refreshReplay", "refreshRateLimited",
+            "newIpPrefix",
+        ]
+        for k in kinds + ["futureKind", ""] {
             c.receive(event("securityNotice", ["kind": .string(k), "at": 1, "platform": "ios"]))
         }
         await settle()
