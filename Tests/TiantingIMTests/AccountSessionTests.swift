@@ -1782,6 +1782,21 @@ final class AccountOtherTests: AccountTestCase {
         XCTAssertEqual(got, [SecurityNotice(kind: "newDeviceLogin", at: 123, platform: "ios")])
     }
 
+    // AC-ACC-03-25, AC-ACC-03-45, F-ACC-05 rule 5.
+    func testSecurityNoticeAllFourServerKindsPass() async {
+        let h = setupAccount()
+        h.session(1, DAY)
+        let c = await h.online()
+        var got: [String] = []
+        h.im.on { if case .securityNotice(let n) = $0 { got.append(n.kind) } }
+        let kinds = ["newDeviceLogin", "recoveryCodeRegenerated", "refreshReplay", "refreshRateLimited"]
+        for k in kinds + ["newIpPrefix", ""] {
+            c.receive(event("securityNotice", ["kind": .string(k), "at": 1, "platform": "ios"]))
+        }
+        await settle()
+        XCTAssertEqual(got, kinds)
+    }
+
     func testTC_ACC_09_01_inviteUsedUpReachesTheAppWithoutASession() async {
         let h = setupAccount()
         let p = Task { try await h.account.register(username: "carol_1", password: "Password-1", inviteCode: "INV") }

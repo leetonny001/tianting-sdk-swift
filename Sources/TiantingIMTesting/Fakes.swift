@@ -250,6 +250,8 @@ public final class MemorySessionStore: AccountSessionStore {
     public var holdSaves = false
     /// While true, a `clear` waits until `releaseSaves()`.
     public var holdClears = false
+    /// While true, a `savePendingLogouts` waits until `releaseSaves()`.
+    public var holdPending = false
     private var heldSaves: [CheckedContinuation<Void, Never>] = []
 
     public init() {}
@@ -281,12 +283,14 @@ public final class MemorySessionStore: AccountSessionStore {
 
     public func savePendingLogouts(_ pending: [PendingLogout]) async throws {
         calls.append("savePending")
+        if holdPending { await withCheckedContinuation { heldSaves.append($0) } }
         pendingLogouts = pending
     }
 
     public func releaseSaves() {
         holdSaves = false
         holdClears = false
+        holdPending = false
         let held = heldSaves
         heldSaves = []
         for c in held { c.resume() }

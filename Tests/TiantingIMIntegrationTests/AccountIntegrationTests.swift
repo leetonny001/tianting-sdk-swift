@@ -241,6 +241,12 @@ final class AccountIntegrationTests: XCTestCase {
         let events = try await d1.account.listEvents()
         XCTAssertGreaterThanOrEqual(events.otherSessions.count, 1)
         XCTAssertGreaterThan(events.events.count, 0)
+        // Other kinds reach the SDK too (F-ACC-05 rule 5).
+        _ = try await d2.account.regenerateRecoveryCode(password: goodPassword)
+        try await untilTrue("recoveryCodeRegenerated", timeout: 2) {
+            d1.notices.contains { $0.kind == "recoveryCodeRegenerated" }
+        }
+        XCTAssertEqual(d1.notices.first { $0.kind == "recoveryCodeRegenerated" }?.platform, "android")
     }
 
     // MARK: Refresh

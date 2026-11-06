@@ -468,4 +468,243 @@ final class AccountUnifiedTests: AccountTestCase {
         XCTAssertEqual(w.ended.count, 1)
         XCTAssertNil(h.account.session)
     }
+
+    // MARK: A1: login while a logout is in flight (issues A1, I6 in frontend-chat): a logout ends only its own session
+
+    private let loginPath = "/v1/account/login"
+    private let logoutPath = "/v1/account/logout"
+
+    private func loggingOut(_ h: AccountHarness) async -> (FakeConnection, Task<Bool, Never>) {
+        h.session(1, DAY, sid: "old")
+        let c = await h.online()
+        let out = Task { await h.account.logout() }
+        await settle()
+        return (c, out)
+    }
+
+    private func loginAgain(_ h: AccountHarness, sid: String = "new", code: String? = nil) async throws {
+        let p = Task { try await h.account.login(username: USER, password: "Password-1") }
+        await settle()
+        h.http.last(loginPath).respond(
+            200, authBody(sid: sid, gen: 1, accessExpiresAt: h.clock.now() + DAY, recoveryCode: code, recoveryCodeGen: 3))
+        _ = try await p.value
+        await settle()
+    }
+
+    func testA1_lateLogoutAnswerLeavesTheNewSessionAlone() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        try await loginAgain(h)
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+        call.respond(200)
+        let confirmed = await out.value
+        XCTAssertTrue(confirmed)
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+        XCTAssertEqual(w.ended, [])
+        XCTAssertEqual(w.fatal, [])
+        let c2 = await h.authNew()
+        XCTAssertEqual(authToken(c2), jwt("new", 1))
+    }
+
+    func testA1_failedLogoutKeepsTheOldRecordAndSendsItLater() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        try await loginAgain(h)
+        call.fail()
+        let confirmed = await out.value
+        XCTAssertFalse(confirmed)
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+        XCTAssertEqual(w.ended, [])
+        XCTAssertEqual(h.unregistered, 0, "the system token is the new session's now")
+        XCTAssertEqual(h.store.pendingLogouts, [PendingLogout(sid: "old", refreshToken: refreshToken("old", 1))])
+        let retry = h.http.last(logoutPath)
+        XCTAssertFalse(retry === call, "with a new session the old sid is sent again at once")
+        XCTAssertNil(retry.bearer)
+        XCTAssertEqual(retry.json["refreshToken"]?.stringValue, refreshToken("old", 1))
+        retry.respond(200)
+        await settle()
+        XCTAssertEqual(h.store.pendingLogouts, [])
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+    }
+
+    func testA1_serverRefusingTheOldLogoutDropsTheRecord() async throws {
+        let h = setupAccount()
+        let (_, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        try await loginAgain(h)
+        call.respondError(401, 4019)
+        _ = await out.value
+        await settle()
+        for c in h.http.pending where c.path == logoutPath { c.respond(200) }  // The send a login starts (F-ACC-04 rule 1).
+        await settle()
+        XCTAssertEqual(h.store.pendingLogouts, [])
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+    }
+
+    func testA1_loginDuringThePendingWriteIsNotClearedByTheLogout() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        h.session(1, DAY, sid: "old")
+        await h.online()
+        h.store.holdPending = true
+        let out = Task { await h.account.logout() }
+        await settle()
+        XCTAssertEqual(h.http.to(logoutPath).count, 0, "the record comes first")
+        let login = Task { try await h.account.login(username: USER, password: "Password-1") }
+        await settle()
+        h.http.last(loginPath).respond(200, authBody(sid: "new", gen: 1, accessExpiresAt: h.clock.now() + DAY))
+        await settle()
+        let clears = h.store.clears
+        h.store.releaseSaves()
+        _ = try await login.value
+        await settle()
+        XCTAssertEqual(h.store.clears, clears, "the logout does not clear any more")
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+        h.http.to(logoutPath)[0].respond(200)
+        _ = await out.value
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+        XCTAssertEqual(w.ended, [])
+    }
+
+    func testA1_memoryOnlySessionStaysUnsavedUntilTheAck() async throws {
+        let h = setupAccount()
+        let (_, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        try await loginAgain(h, code: "RC")
+        call.respond(200)
+        _ = await out.value
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertNil(h.store.saved)
+        let ack = Task { try await h.account.ackRecoveryCode(gen: 3) }
+        await settle()
+        h.http.last("/v1/account/recovery-code/ack").respond(200)
+        try await ack.value
+        await settle()
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("new", 1))
+    }
+
+    func testA1_failedLoginLeavesTheLogoutToEndTheOldSession() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out) = await loggingOut(h)
+        let p = Task { try await h.account.login(username: USER, password: "wrong-password") }
+        await settle()
+        h.http.last(loginPath).respondError(401, 4018)
+        let e = await errorOf(p)
+        XCTAssertEqual((e as? AccountError)?.code, 4018)
+        h.http.to(logoutPath)[0].respond(200)
+        _ = await out.value
+        await settle()
+        XCTAssertNil(h.account.session)
+        XCTAssertNil(h.store.saved)
+        XCTAssertEqual(w.ended, [SessionEnd(action: .logout)])
+    }
+
+    func testA1_loginSentBeforeTheLogoutIsNotAdopted() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        h.session(1, DAY, sid: "old")
+        await h.online()
+        let p = Task { try await h.account.login(username: USER, password: "Password-1") }
+        await settle()
+        let out = Task { await h.account.logout() }
+        await settle()
+        h.http.last(loginPath).respond(200, authBody(sid: "new", gen: 1, accessExpiresAt: h.clock.now() + DAY))
+        let e = await errorOf(p)
+        XCTAssertTrue(e is SessionEndedError)
+        h.http.last(logoutPath).respond(200)
+        _ = await out.value
+        await settle()
+        XCTAssertNil(h.account.session)
+        XCTAssertNil(h.store.saved)
+        XCTAssertEqual(w.ended, [SessionEnd(action: .logout)])
+    }
+
+    func testA1_twoLogoutsEachEndTheirOwnSession() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out1) = await loggingOut(h)
+        let first = h.http.to(logoutPath)[0]
+        try await loginAgain(h)
+        let out2 = Task { await h.account.logout() }
+        await settle()
+        let second = h.http.to(logoutPath).first { $0.json["refreshToken"]?.stringValue == refreshToken("new", 1) && $0.bearer != nil }
+        XCTAssertNotNil(second)
+        second?.respond(200)
+        _ = await out2.value
+        await settle()
+        XCTAssertNil(h.account.session)
+        XCTAssertEqual(w.ended, [SessionEnd(action: .logout)])
+        first.respond(200)
+        _ = await out1.value
+        await settle()
+        XCTAssertEqual(w.ended, [SessionEnd(action: .logout)])
+    }
+
+    func testA1_thirdSessionSurvivesTwoLogoutsInFlight() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out1) = await loggingOut(h)
+        let first = h.http.to(logoutPath)[0]
+        try await loginAgain(h)
+        let out2 = Task { await h.account.logout() }
+        await settle()
+        let second = h.http.to(logoutPath).first { $0.json["refreshToken"]?.stringValue == refreshToken("new", 1) && $0.bearer != nil }
+        try await loginAgain(h, sid: "third")
+        first.respond(200)
+        second?.respond(200)
+        _ = await out1.value
+        _ = await out2.value
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt("third", 1))
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("third", 1))
+        XCTAssertEqual(w.ended, [])
+    }
+
+    func testA1_heldKickOfTheOldConnectionIsVoidTheNewSessionsKickIsNot() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (c, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        c.receive(event("kicked", ["reason": "sessionRevoked"]))
+        c.drop(4012)
+        await settle()
+        try await loginAgain(h)
+        XCTAssertEqual(h.account.session?.accessToken, jwt("new", 1))
+        XCTAssertEqual(w.fatal, [])
+        let c2 = await h.authNew()
+        c2.receive(event("kicked", ["reason": "passwordChanged"]))
+        c2.drop(4012)
+        await settle()
+        XCTAssertNil(h.account.session)
+        XCTAssertEqual(w.ended.map(\.reason), ["passwordChanged"])
+        call.respond(200)
+        _ = await out.value
+        await settle()
+        XCTAssertEqual(w.ended.count, 1)
+    }
+
+    func testA1_demoRestoreCountsAsANewSession() async throws {
+        let h = setupAccount()
+        let w = Watch(h)
+        let (_, out) = await loggingOut(h)
+        let call = h.http.to(logoutPath)[0]
+        h.account.restore(AccountSession(mode: .demo, userId: USER, accessToken: "demo-token", accessExpiresAt: h.clock.now() + DAY))
+        call.respond(200)
+        _ = await out.value
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, "demo-token")
+        XCTAssertEqual(w.ended, [])
+    }
 }

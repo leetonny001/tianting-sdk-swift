@@ -2538,7 +2538,7 @@
                 "kind": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "PRD-chat F-ACC-02 规则 3b。客户端忽略不认识的取值。本批：newDeviceLogin"
+                  "description": "PRD-chat F-ACC-02 规则 3b。客户端忽略不认识的取值。本批服务端实际发：newDeviceLogin、recoveryCodeRegenerated、refreshReplay、refreshRateLimited"
                 },
                 "at": {
                   "$ref": "#/$defs/TimestampMs"

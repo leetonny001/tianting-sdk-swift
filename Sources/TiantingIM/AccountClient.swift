@@ -422,6 +422,9 @@ public final class AccountClient {
     private var queue: [@MainActor () -> Void] = []
     private var refreshQueued = false
     private var epoch = 0  // Up by one each time a session ends: a late response cannot revive it.
+    private var sessionSeq = 0  // Up by one per new session (login, register, recover, restore): a logout only ends its own (A1).
+    private var logoutSeq = 0  // Up by one per logout: a login sent before it is not adopted (logout wins).
+    private var logoutHolds = Set<UUID>()  // The `holdDepth` taken by logouts in flight: a new session lets them all go.
     private var lastEnd: SessionEnd?  // The most recent end; cleared by a new session (issue K7).
 
     private var holdDepth = 0  // A `sid`-changing operation is in flight (F-ACC-04 rule 3).
@@ -442,7 +445,7 @@ public final class AccountClient {
     private var flushingPending = false
     private var flushTimer: TimerHandle?
     private var flushFailures = 0
-    private var loggingOut = false  // The session stays in memory until the server answers; it does not refresh.
+    private var loggingOut: Bool { !logoutHolds.isEmpty }  // The session stays in memory until the server answers; it does not refresh.
 
     public init(options o: AccountClientOptions) {
         var base = o.baseUrl
@@ -517,12 +520,15 @@ public final class AccountClient {
 
     /// Restores a session without writing the store or emitting `.tokens`.
     public func restore(_ saved: AccountSession) {
+        let isNew = saved.accessToken != current?.accessToken
+        if isNew { sessionSeq += 1 }
         current = saved
         lineage = lineageOf(saved.accessToken)
         shortOnArrival = false
         lastEnd = nil
         resetFailures()
         armLifeTimer()
+        if isNew { releaseLogoutHolds() }
     }
 
     /// Back in the foreground.
@@ -939,6 +945,17 @@ public final class AccountClient {
         }
     }
 
+    /// A new session exists: a logout in flight only concerns the old one. The old connection went with the token change, so
+    /// the kicks it held are void, and the new session's kicks do not wait for it.
+    private func releaseLogoutHolds() {
+        holdDepth -= logoutHolds.count
+        logoutHolds.removeAll()
+        guard holdDepth == 0 else { return }
+        let held = heldKicks
+        heldKicks = []
+        for (_, decide) in held { decide(.ignore) }
+    }
+
     // MARK: The serial queue (RS4-03)
 
     private func enqueue<T: Sendable>(hold: Bool = false, _ fn: @escaping @MainActor () async throws -> T) async throws -> T {
@@ -976,6 +993,19 @@ public final class AccountClient {
         if refreshQueued {
             refreshQueued = false
             if retryTimer == nil { trigger(.timer) }  // While waiting on a retry, the due timer sends.
+        }
+    }
+
+    /// Login, registration, recovery: a new session. Usable while a logout is in flight, whose end leaves this session alone (A1).
+    private func enqueueNewSession(_ path: String, _ body: JSONValue, hold: Bool = false) async throws -> AuthResult {
+        let logouts = logoutSeq
+        return try await enqueue(hold: hold) {
+            let resp = try parseAuth(try await self.send(AuthResponse.self, .post, path, body: body, bearer: nil))
+            if logouts != self.logoutSeq { throw SessionEndedError() }  // Sent before the logout was asked for: logout wins.
+            self.sessionSeq += 1  // Before the save: a logout whose clear comes after it then skips the clear.
+            let result = try await self.applyAuth(resp)
+            self.releaseLogoutHolds()
+            return result
         }
     }
 
@@ -1041,22 +1071,14 @@ public final class AccountClient {
         body["password"] = .string(password)
         if let nickname { body["nickname"] = .string(nickname) }
         if let inviteCode { body["inviteCode"] = .string(inviteCode) }
-        let payload = JSONValue.object(body)
-        return try await enqueue {
-            try await self.applyAuth(
-                try parseAuth(try await self.send(AuthResponse.self, .post, "/v1/account/register", body: payload, bearer: nil)))
-        }
+        return try await enqueueNewSession("/v1/account/register", .object(body))
     }
 
     public func login(username: String, password: String) async throws -> AuthResult {
         var body = deviceFields()
         body["username"] = .string(username)
         body["password"] = .string(password)
-        let payload = JSONValue.object(body)
-        return try await enqueue {
-            try await self.applyAuth(
-                try parseAuth(try await self.send(AuthResponse.self, .post, "/v1/account/login", body: payload, bearer: nil)))
-        }
+        return try await enqueueNewSession("/v1/account/login", .object(body))
     }
 
     /// Recovery (F-ACC-05): changes the `sid`; the response carries a new recovery code.
@@ -1065,11 +1087,7 @@ public final class AccountClient {
         body["username"] = .string(username)
         body["recoveryCode"] = .string(recoveryCode)
         body["newPassword"] = .string(newPassword)
-        let payload = JSONValue.object(body)
-        return try await enqueue(hold: true) {
-            try await self.applyAuth(
-                try parseAuth(try await self.send(AuthResponse.self, .post, "/v1/account/recover", body: payload, bearer: nil)))
-        }
+        return try await enqueueNewSession("/v1/account/recover", .object(body), hold: true)
     }
 
     /// Refreshes now, merged with the other entry points. Returns once the token changed; throws after 30 seconds without
@@ -1102,23 +1120,30 @@ public final class AccountClient {
     /// The record is written and the stored session cleared before the request, so a process killed in between stays
     /// logged out and still sends it. Tokens not yet allowed on disk (RS5-13) reach the record only when the request
     /// failed, as with sdk-kotlin.
+    ///
+    /// It ends only the session it started on: one logged in while waiting for the answer stays, with no `.ended`, and the
+    /// old `sid`'s pending record carries on as usual (A1).
     @discardableResult
     public func logout() async -> Bool {
         guard let s = current else { return true }
         epoch += 1
+        logoutSeq += 1
+        let seq = sessionSeq
         abandonRefresh()
         guard s.mode == .account else {
             endSession(SessionEnd(action: .logout))
             await storeTail?.value
             return true
         }
-        loggingOut = true
+        let hold = UUID()
+        logoutHolds.insert(hold)
         holdDepth += 1
         let unacked = memoryOnly
         let pending = pendingFor(s)
         await loadPendingIfNeeded()
         if let pending, !unacked { await addPending(pending) }
-        scheduleStoreWrite { try await $0.clear() }
+        // A login may have succeeded while the record was written: the stored session is then the new one.
+        if seq == sessionSeq { scheduleStoreWrite { try await $0.clear() } }
         var confirmed = false
         var body: [String: JSONValue] = [:]
         if let r = s.refreshToken { body["refreshToken"] = .string(r) }
@@ -1130,14 +1155,14 @@ public final class AccountClient {
             log.warn("account: logout not confirmed: \(errorKind(error))")
             if retriableLogoutFailure(error) {
                 if let pending, unacked { await addPending(pending) }
-                unregisterSystemPushToken?()
+                // With a new session the system token is its token: it stays, and the old `sid` unbinds through the record.
+                if seq == sessionSeq { unregisterSystemPushToken?() } else { flushPendingLogouts() }
             } else if let pending {
                 await removePending(pending)  // The server's answer: sending it again changes nothing.
             }
         }
-        holdDepth -= 1
-        loggingOut = false
-        endSession(SessionEnd(action: .logout))
+        if logoutHolds.remove(hold) != nil { holdDepth -= 1 }
+        if seq == sessionSeq { endSession(SessionEnd(action: .logout)) }
         await storeTail?.value  // Returning means the token is off the disk.
         return confirmed
     }
