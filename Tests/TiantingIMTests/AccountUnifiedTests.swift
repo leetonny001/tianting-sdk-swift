@@ -239,6 +239,169 @@ final class AccountUnifiedTests: AccountTestCase {
         XCTAssertEqual(w.fatal.count, 1)
     }
 
+    // MARK: The ack and a new generation crossing: an ack only counts for the unacknowledged one (F-ACC-05 rule 1, RS5-13)
+
+    private let ackPath = "/v1/account/recovery-code/ack"
+    private let regenPath = "/v1/account/recovery-code"
+    private let regenBody: JSONValue = ["recoveryCode": "CODE-3", "recoveryCodeGen": 3]
+
+    private func withCode(_ h: AccountHarness, _ sid: String, _ code: Int64) -> JSONValue {
+        authBody(sid: sid, gen: 1, accessExpiresAt: h.clock.now() + DAY, recoveryCode: "CODE-\(code)", recoveryCodeGen: code)
+    }
+
+    /// A password change got generation 2, not acknowledged. The `sid` is sid2.
+    private func unackedGen2(_ h: AccountHarness) async throws {
+        h.session(1, DAY)
+        let change = Task { try await h.account.changePassword(oldPassword: "Password-1", newPassword: "Password-2") }
+        await settle()
+        h.http.last(PASSWORD).respond(200, withCode(h, "sid2", 2))
+        _ = try await change.value
+        XCTAssertNil(h.store.saved)
+    }
+
+    /// Still memory only: a refresh is not saved.
+    private func stillMemoryOnly(_ h: AccountHarness, sid: String, file: StaticString = #filePath, line: UInt = #line) async {
+        let next = h.account.localGen + 1
+        h.clock.advance(18 * HOUR + 1)
+        h.account.foreground()
+        await settle()
+        h.http.last(REFRESH).respond(200, authBody(sid: sid, gen: next, accessExpiresAt: h.clock.now() + DAY))
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt(sid, next), file: file, line: line)
+        XCTAssertNil(h.store.saved, file: file, line: line)
+    }
+
+    private func ack(_ h: AccountHarness, _ gen: Int64) async throws {
+        let p = Task { try await h.account.ackRecoveryCode(gen: gen) }
+        await settle()
+        h.http.last(ackPath).respond(200, [:])
+        try await p.value
+        await settle()
+    }
+
+    func testAck_staleResponseAfterPasswordChangeDoesNotSaveTheNewToken() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        let stale = Task { try await h.account.ackRecoveryCode(gen: 2) }
+        await settle()
+        let staleCall = h.http.last(ackPath)
+        let change = Task { try await h.account.changePassword(oldPassword: "Password-2", newPassword: "Password-3") }
+        await settle()
+        h.http.last(PASSWORD).respond(200, withCode(h, "sid3", 3))
+        _ = try await change.value
+        staleCall.respond(200, [:])
+        try await stale.value
+        await settle()
+        XCTAssertNil(h.store.saved)
+        await stillMemoryOnly(h, sid: "sid3")
+        try await ack(h, 3)
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid3", 2))
+    }
+
+    func testAck_staleResponseAfterRegenerateDoesNotSave() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        let stale = Task { try await h.account.ackRecoveryCode(gen: 2) }
+        await settle()
+        let staleCall = h.http.last(ackPath)
+        let regen = Task { try await h.account.regenerateRecoveryCode(password: "Password-2") }
+        await settle()
+        h.http.last(regenPath).respond(200, regenBody)
+        _ = try await regen.value
+        staleCall.respond(200, [:])
+        try await stale.value
+        await settle()
+        XCTAssertNil(h.store.saved)
+        await stillMemoryOnly(h, sid: "sid2")
+        try await ack(h, 3)
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid2", 2))
+    }
+
+    func testAck_staleResponseAfterRecoverDoesNotSave() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        let stale = Task { try await h.account.ackRecoveryCode(gen: 2) }
+        await settle()
+        let staleCall = h.http.last(ackPath)
+        let recover = Task { try await h.account.recover(username: USER, recoveryCode: "CODE-2", newPassword: "Password-3") }
+        await settle()
+        h.http.last("/v1/account/recover").respond(200, withCode(h, "sid3", 3))
+        _ = try await recover.value
+        staleCall.respond(200, [:])
+        try await stale.value
+        await settle()
+        XCTAssertNil(h.store.saved)
+        await stillMemoryOnly(h, sid: "sid3")
+        try await ack(h, 3)
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid3", 2))
+    }
+
+    func testAck_newGenerationDuringTheSaveKeepsTheFlagAndClears() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        h.store.holdSaves = true
+        let stale = Task { try await h.account.ackRecoveryCode(gen: 2) }
+        await settle()
+        h.http.last(ackPath).respond(200, [:])
+        await settle()
+        let change = Task { try await h.account.changePassword(oldPassword: "Password-2", newPassword: "Password-3") }
+        await settle()
+        h.http.last(PASSWORD).respond(200, withCode(h, "sid3", 3))
+        await settle()
+        h.store.releaseSaves()
+        try await stale.value
+        _ = try await change.value
+        await settle()
+        XCTAssertEqual(h.account.session?.accessToken, jwt("sid3", 1))
+        XCTAssertNil(h.store.saved)
+        await stillMemoryOnly(h, sid: "sid3")
+    }
+
+    func testAck_lateRegenerateResponseDoesNotMoveTheGenerationBack() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        let regen = Task { try await h.account.regenerateRecoveryCode(password: "Password-2") }
+        await settle()
+        let regenCall = h.http.last(regenPath)
+        let change = Task { try await h.account.changePassword(oldPassword: "Password-2", newPassword: "Password-3") }
+        await settle()
+        h.http.last(PASSWORD).respond(200, withCode(h, "sid3", 4))
+        _ = try await change.value
+        regenCall.respond(200, regenBody)
+        _ = try await regen.value
+        try await ack(h, 4)
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid3", 1))
+    }
+
+    func testAck_logoutOthersKeepsTheGeneration() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        let others = Task { try await h.account.logoutOthers(password: "Password-2") }
+        await settle()
+        h.http.last("/v1/account/logout-others").respond(200, authBody(sid: "sid3", gen: 1, accessExpiresAt: h.clock.now() + DAY))
+        _ = try await others.value
+        XCTAssertNil(h.store.saved)
+        try await ack(h, 2)
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid3", 1))
+    }
+
+    func testAck_afterAckRefreshSavesAndRegenerateDoesNotGoBackToMemoryOnly() async throws {
+        let h = setupAccount()
+        try await unackedGen2(h)
+        try await ack(h, 2)
+        let regen = Task { try await h.account.regenerateRecoveryCode(password: "Password-2") }
+        await settle()
+        h.http.last(regenPath).respond(200, regenBody)
+        _ = try await regen.value
+        try await ack(h, 3)
+        h.clock.advance(18 * HOUR + 1)
+        h.account.foreground()
+        await settle()
+        h.http.last(REFRESH).respond(200, authBody(sid: "sid2", gen: 2, accessExpiresAt: h.clock.now() + DAY))
+        await settle()
+        XCTAssertEqual(h.store.saved?.accessToken, jwt("sid2", 2))
+    }
+
     // MARK: K5. Connection and AccountClient share the main actor, so sdk-kotlin's race does not exist here. These pin why.
 
     func testK5_responseFirstThenKickNeverReachesTheAccount() async throws {

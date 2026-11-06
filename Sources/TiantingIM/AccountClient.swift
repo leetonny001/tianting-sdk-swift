@@ -397,6 +397,7 @@ public final class AccountClient {
     private var current: AccountSession?
     private var lineage = TokenLineage(sid: "", gen: 0)
     private var memoryOnly = false  // Until the recovery code is acknowledged (F-ACC-05 rule 1).
+    private var unackedGen: Int64?  // While memory only, the generation waiting: acknowledging another one does not count.
 
     private struct Inflight {
         let attempt: Int64
@@ -781,6 +782,11 @@ public final class AccountClient {
         let started = epoch
         let next = sessionFrom(resp)
         memoryOnly = resp.recoveryCode != nil || (keepMemoryOnly && memoryOnly)
+        if resp.recoveryCode != nil {
+            unackedGen = resp.recoveryCodeGen
+        } else if !memoryOnly {
+            unackedGen = nil
+        }
         do {
             if memoryOnly {
                 try await storeWrite { try await $0.clear() }
@@ -1138,7 +1144,11 @@ public final class AccountClient {
 
     /// Regenerates the recovery code (F-ACC-05 rule 5). The token stays.
     public func regenerateRecoveryCode(password: String) async throws -> RecoveryCodeResult {
-        try await authed(RecoveryCodeResult.self, .post, "/v1/account/recovery-code", body: ["password": .string(password)])
+        let r = try await authed(RecoveryCodeResult.self, .post, "/v1/account/recovery-code", body: ["password": .string(password)])
+        // While memory only, this is the generation to acknowledge. The response can arrive after a later password change:
+        // the generation only moves forward.
+        if memoryOnly { unackedGen = max(unackedGen ?? 0, r.recoveryCodeGen) }
+        return r
     }
 
     /// Confirms the recovery code was saved. Tokens kept in memory until now reach the store only after this.
@@ -1150,16 +1160,19 @@ public final class AccountClient {
             endSession(SessionEnd(action: .login, dialog: .recoveryCodeStale, reason: e.reason, code: e.code))
             throw e
         }
-        guard memoryOnly else { return }
+        // An older generation (a password change, recovery or regeneration moved on meanwhile): this generation's token
+        // must not reach the store yet (RS5-13).
+        guard memoryOnly, gen == unackedGen else { return }
         // A refresh during the save would keep going to memory only, so save until what is stored is what is in use.
-        while let s = current {
+        while memoryOnly, gen == unackedGen, let s = current {
             try await storeWrite { try await $0.save(s) }
-            if current == s {
+            if current == s, gen == unackedGen {
                 memoryOnly = false
+                unackedGen = nil
                 return
             }
         }
-        try? await storeWrite { try await $0.clear() }  // Ended during the save.
+        if current == nil { try? await storeWrite { try await $0.clear() } }  // Ended during the save.
     }
 
     /// Changes the profile (F-ACC-06). This device shows it at once; others follow the 10-minute cache.
@@ -1404,6 +1417,7 @@ public final class AccountClient {
         current = nil
         lastEnd = e
         memoryOnly = false
+        unackedGen = nil
         shortOnArrival = false
         abandonRefresh()
         resetFailures()
