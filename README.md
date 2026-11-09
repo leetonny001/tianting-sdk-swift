@@ -1,6 +1,6 @@
 # tianting-sdk-swift
 
-天听 IM SDK（Swift）：iOS 的网络层与数据层。**天听**是自研的微信式 IM 产品。
+天听 IM SDK（Swift）：iOS 的网络层与数据层。**天听**是自研的独立 IM 产品。
 
 | | |
 |---|---|
