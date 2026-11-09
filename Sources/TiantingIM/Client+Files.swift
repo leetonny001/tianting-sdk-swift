@@ -312,6 +312,7 @@ extension IMClient {
             guard alive(j) else { return }
             let done = try await files.complete(up.fileId)
             j.completed = true
+            ownFileIds.insert(done.fileId)
             guard alive(j) else { return }
             list.update(id) {
                 if $0.type == .image {
@@ -386,7 +387,8 @@ extension IMClient {
         enqueueUpload(convId, clientMsgId)
     }
 
-    /// `send` answered 4096 (the file was purged after 24 hours, or bound elsewhere): with a sandbox copy the message goes
+    /// `send` answered 4096 (the file was purged after 24 hours, or bound elsewhere), or 4048 for a fileId this device
+    /// completed itself (the purge deleted the row; v1.4, P-37 ①): with a sandbox copy the message goes
     /// back to uploading and uploads again, not counted as an automatic resend (RC2-23); without it, it fails with
     /// `sourceMissing` (F-FILE-07 rule 4, AC-FILE-07-10).
     func reupload(_ convId: String, _ clientMsgId: String) {
@@ -484,6 +486,7 @@ extension IMClient {
         producers = [:]
         progressHandlers = [:]
         outboxWritten = [:]
+        ownFileIds = []
         files?.clear()
         guard !me.isEmpty else { return }
         try? FileManager.default.removeItem(at: userAttachmentDir)
@@ -501,6 +504,8 @@ extension IMClient {
         for (stored, src) in rows {
             var m = stored
             outboxWritten[m.clientMsgId] = OutboxRow(message: stored, source: src)
+            // Only this device's own uploads are in the outbox, written after their complete.
+            if let id = m.body.fileId { ownFileIds.insert(id) }
             switch m.status {
             case .processing, .uploading:
                 m.status = .failed

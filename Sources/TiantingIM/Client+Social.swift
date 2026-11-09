@@ -183,6 +183,27 @@ extension IMClient {
         return ids.compactMap { profiles.fresh($0) }
     }
 
+    /// After an own profile change (issue H13): fetch the own profile once, ignoring the cache age. Offline it waits for
+    /// the next connection (the new nickname shows locally meanwhile). Emits `profileChanged` when it arrives; a failure is
+    /// only logged, the 10-minute cache refreshes it later as usual.
+    func refetchOwnProfile(_ userId: String) {
+        guard conn.state == .connected else {
+            pendingProfileRefetch.insert(userId)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let ack = try await self.conn.request(UsersAck.self, "users", ["userIds": .array([.string(userId)])])
+                guard let u = ack.users.first(where: { $0.userId == userId }) else { return }
+                self.profiles.put(u)
+                self.emit(.profileChanged(userId: userId))
+            } catch {
+                self.log.warn("im: profile refetch failed: \(describeForLog(error))")
+            }
+        }
+    }
+
     private func flushUsers() async {
         let queue = usersQueue
         usersQueue = [:]

@@ -123,7 +123,7 @@ im.cachedFile(fileId: id, variant: .thumb)  // 已下载的本地文件
 ```
 
 - 状态：`processing` → `uploading` → `queued`（待发送：已 complete）→ `sending` → `sent`，任何一步可以 `failed`。全局同时只传一个，按选择顺序；文字可以越过。上传的时间不算 10 秒发送超时。
-- `error`：`.code(4292)` 额度用完、`.code(4290)` + `errorReason == "uploadPendingLimit"`（都不自动重试）、`.code(4139/4150/4096/5032)`，或 `.network`、`.process`（"无法处理这张图片，请用文件方式发送"）、`.storage`（"存储空间不足"）、`.sourceMissing`（"原文件已不可用，请重新选择"）、`.interrupted`（冷启动时还在处理或上传）、`.timeout`、`.kicked`。`complete` 的 5032 退避 1、2、4 秒重试 3 次；`send` 返回 4096 时有沙盒副本的回到上传中重新上传，不占自动重发次数。
+- `error`：`.code(4292)` 额度用完、`.code(4290)` + `errorReason == "uploadPendingLimit"`（都不自动重试）、`.code(4139/4150/4096/5032)`，或 `.network`、`.process`（"无法处理这张图片，请用文件方式发送"）、`.storage`（"存储空间不足"）、`.sourceMissing`（"原文件已不可用，请重新选择"）、`.interrupted`（冷启动时还在处理或上传）、`.timeout`、`.kicked`。`complete` 的 5032 退避 1、2、4 秒重试 3 次；`send` 返回 4096，或这台设备自己上传（`complete` 成功过）的 `fileId` 返回 4048（24 小时未绑定被清理，PRD-chat v1.4 F-FILE-07 规则 4），有沙盒副本的回到上传中重新上传，不占自动重发次数，没有的 `.sourceMissing`；别人的 `fileId` 收到 4048 照常失败。改头像后 `IMClient` 重新拉一次自己的资料（`TokenProvider.onProfileChanged` 带 `ProfileChange`，问题 H13）。
 - 沙盒副本：发出后删除，失败保留供手动重发，退出登录、被踢时整目录删除。没发出的图片和文件记在本地库的 `outbox` 表（只有沙盒里的文件名，不存预签名地址），冷启动时处理中、上传中的转失败、不自动重传；已经 complete 的按"排队"规则自动发一次。没有引用的沙盒文件启动时删除。
 - 本地库版本 2：版本 1 原地升级（加 `outbox` 表），已有的会话和消息保留。会话记着已核对的 `modVer`，重连只重拉 `modVer` 变了的会话（服务端没有 `modVer` 时全部重拉）；`deleted`、`expired` 只能从假变真，过期的文件名清空。
 - 对象存储的 PUT、GET（`URLSessionObjectStoreTransport`）每次用新的会话，不复用连接：断在半路的 PUT 只到达 1 次（`URLSessionRetryTests` 用真实 socket 数过）。GET 会被 URLSession 自己重发，对下载无害（只读、同一个短期地址、2xx 才写文件）。不跟随重定向，不打日志。

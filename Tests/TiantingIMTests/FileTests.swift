@@ -512,6 +512,58 @@ final class FileFailureTests: FileTestCase {
         XCTAssertEqual(h.im.messages(AB), [])
     }
 
+    // TC-FILE-07-10, v1.4 (P-37 ①): the purge deleted the row, so `send` answers 4048 for this device's own upload: the same
+    // as 4096, uploaded again from the sandbox, not counted as the automatic resend.
+    func testTC_FILE_07_10_send4048ForOwnUploadUploadsAgain() async throws {
+        let (h, c) = await online()
+        try h.im.sendImage(AB, image())
+        await uploadOk(h, "F1")
+        c.ackError("send", 4048)
+        await settle()
+        XCTAssertEqual(status(h), ["cid-0001:uploading"])
+        XCTAssertEqual(h.http.to(UPLOADS).count, 2, "a new upload")
+        await uploadOk(h, "F2")
+        XCTAssertEqual(c.last("send")?.data?["clientMsgId"], "cid-0001")
+        XCTAssertEqual(c.last("send")?.data?["body"], ["image": ["fileId": "F2"]])
+        c.drop(1006)
+        await settle()
+        XCTAssertEqual(status(h), ["cid-0001:queued"], "the automatic resend is still unused")
+    }
+
+    func testTC_FILE_07_10_send4048ForOwnUploadWithoutTheSandboxCopyIsSourceMissing() async throws {
+        let (h, c) = await online()
+        try h.im.sendImage(AB, image())
+        await uploadOk(h, "F1")
+        try FileManager.default.removeItem(at: h.im.sandboxFile("cid-0001-original"))
+        c.ackError("send", 4048)
+        await settle()
+        XCTAssertEqual(status(h), ["cid-0001:failed(sourceMissing)"])
+        XCTAssertEqual(h.http.to(UPLOADS).count, 1)
+    }
+
+    // P-37 ①: a fileId this device did not upload (forwarding, later) keeps failing with 4048; nothing is uploaded.
+    // There is no public path to such a message yet, so the test forgets the upload's id.
+    func testSend4048ForAFileIdNotUploadedHereFailsWithoutUpload() async throws {
+        let (h, c) = await online()
+        try h.im.sendImage(AB, image())
+        await uploadOk(h, "F1")
+        h.im.ownFileIds.remove("F1")
+        c.ackError("send", 4048)
+        await settle()
+        XCTAssertEqual(status(h), ["cid-0001:failed(4048)"])
+        XCTAssertEqual(h.http.to(UPLOADS).count, 1, "no new upload")
+    }
+
+    // P-37 ①, cold start: the outbox's ready attachment is this device's own upload.
+    func testOwnFileIdsSurviveTheOutbox() async throws {
+        let (h, _) = await online()
+        try h.im.sendImage(AB, image())
+        await uploadOk(h, "F1")
+        h.im.ownFileIds = []
+        h.im.restoreOutbox([(h.im.messages(AB)[0], nil)])
+        XCTAssertTrue(h.im.ownFileIds.contains("F1"))
+    }
+
     // TC-FILE-07-05 (AC-FILE-07-5, SDK part)
     func testTC_FILE_07_05_appFileDeletedRetryUsesTheSandboxCopy() async throws {
         let (h, c) = await online()

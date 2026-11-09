@@ -1811,6 +1811,64 @@ final class AccountOtherTests: AccountTestCase {
         XCTAssertEqual(c.frames("users").count, 2)
     }
 
+    // H13 (F-ACC-06, AC-ACC-06-6): the avatar's address is made by the server, so after PATCH the own profile is fetched
+    // again; a nickname-only change does not fetch (the request count of TC-ACC-06-05 stays).
+    func testH13_avatarChangeRefetchesTheOwnProfileNicknameOnlyDoesNot() async throws {
+        let h = setupAccount()
+        h.session(1, DAY)
+        let c = await h.online()
+        var changed: [String] = []
+        h.im.on { if case .profileChanged(let id) = $0 { changed.append(id) } }
+        let p = Task { try await h.account.updateProfile(avatarFileId: "F9") }
+        await settle()
+        XCTAssertEqual(h.http.last("/v1/account/profile").json, ["avatarFileId": "F9"])
+        h.http.last("/v1/account/profile").respond(200)
+        try await p.value
+        await settle()
+        let users = c.frames("users")
+        XCTAssertEqual(users.count, 1, "an avatar change fetches the own profile")
+        XCTAssertEqual(users.first?.data?["userIds"], [.string(USER)])
+        XCTAssertEqual(changed, [], "nothing new until the profile arrives")
+        c.ack("users", ["users": [["userId": .string(USER), "nickname": "我", "avatar": "https://pub.test/a/new.jpg", "official": false]]])
+        await settle()
+        XCTAssertEqual(h.im.profileOf(USER)?.avatar, "https://pub.test/a/new.jpg")
+        XCTAssertEqual(changed, [USER])
+
+        let q = Task { try await h.account.updateProfile(nickname: "小明") }
+        await settle()
+        h.http.last("/v1/account/profile").respond(200)
+        try await q.value
+        await settle()
+        XCTAssertEqual(c.frames("users").count, 1, "a nickname is known locally: no fetch")
+        XCTAssertEqual(h.im.profileOf(USER)?.avatar, "https://pub.test/a/new.jpg", "the new nickname keeps the avatar")
+        XCTAssertEqual(h.im.displayName(USER), "小明")
+    }
+
+    // H13: changed while offline -> fetched once after connecting.
+    func testH13_avatarChangeWhileOfflineRefetchesAfterConnecting() async throws {
+        let h = setupAccount()
+        h.session(1, DAY)
+        let c = await h.online()
+        c.drop(1006)
+        await settle()
+        let p = Task { try await h.account.updateProfile(avatarFileId: "F9") }
+        await settle()
+        h.http.last("/v1/account/profile").respond(200)
+        try await p.value
+        await settle()
+        XCTAssertEqual(c.frames("users").count, 0)
+        h.clock.advance(1_000)
+        let c2 = await h.authNew()
+        await settle()
+        let mine = c2.frames("users").filter { $0.data?["userIds"] == [.string(USER)] }
+        XCTAssertEqual(mine.count, 1, "fetched after connecting")
+        c2.drop(1006)
+        h.clock.advance(1_000)
+        let c3 = await h.authNew()
+        await settle()
+        XCTAssertEqual(c3.frames("users").filter { $0.data?["userIds"] == [.string(USER)] }.count, 0, "only once")
+    }
+
     func testTC_ACC_02_13_securityNoticeReachesTheAppUnknownKindIgnored() async {
         let h = setupAccount()
         h.session(1, DAY)

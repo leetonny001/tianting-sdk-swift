@@ -187,6 +187,9 @@ public final class IMClient {
     var job: UploadJob?
     /// What the outbox table holds, to write only what changed.
     var outboxWritten: [String: OutboxRow] = [:]
+    /// fileIds this device completed itself (F-FILE-07 rule 4, v1.4, P-37 ①): a `send` 4048 for one of them means the
+    /// unbound upload was purged, like 4096. Others' fileIds (forwarding) keep failing with 4048.
+    var ownFileIds: Set<String> = []
 
     var store: Store
     var me = ""
@@ -214,6 +217,7 @@ public final class IMClient {
     var socialRunning: Task<Void, Never>?
     var socialSnap = SocialSnapshot()
     var usersQueue: [String: [UsersWaiter]] = [:]
+    var pendingProfileRefetch: Set<String> = []  // The profile changed while offline: fetch after connecting (H13).
     var groupInfoInFlight: [String: Bool] = [:]
 
     private(set) var database: LocalDatabase?
@@ -328,13 +332,17 @@ public final class IMClient {
         }
         unsubscribeProvider = [
             p.onEnded { [weak self] in self?.onSessionEnded($0) },
-            p.onProfileChanged { [weak self] userId, nickname in
+            p.onProfileChanged { [weak self, weak p] userId, change in
                 guard let self else { return }
-                let last = self.profiles.last(userId)
-                self.profiles.put(
-                    UserProfile(
-                        userId: userId, nickname: nickname, avatar: last?.avatar ?? "", official: last?.official ?? false))
-                self.emit(.profileChanged(userId: userId))
+                if let nickname = change.nickname {
+                    let last = self.profiles.last(userId)
+                    self.profiles.put(
+                        UserProfile(
+                            userId: userId, nickname: nickname, avatar: last?.avatar ?? "", official: last?.official ?? false))
+                    self.emit(.profileChanged(userId: userId))
+                }
+                // The new avatar address only comes from `users` (issue H13): fetch the own profile again now.
+                if change.avatarChanged, let p, p === self.provider { self.refetchOwnProfile(userId) }
             },
         ]
     }
@@ -597,6 +605,8 @@ public final class IMClient {
         purgeOldRequests()
         flushQueued()
         pushSync.onAuth(userId: a.userId, serverTime: a.serverTime)  // Does not wait for convs (AC-PUSH-03-24).
+        if pendingProfileRefetch.remove(a.userId) != nil { refetchOwnProfile(a.userId) }
+        pendingProfileRefetch = []
         Task { [weak self] in await self?.runInitialSync() }
     }
 
@@ -1069,7 +1079,12 @@ public final class IMClient {
                     if let im = err as? IMError, im.code == ErrorCode.muted { self.onMutedAck(im.details) }
                     // Another path may already have changed the state (e.g. kicked): only handle "still sending".
                     guard list.local(clientMsgId)?.status == .sending else { return }
-                    if let im = err as? IMError, im.code == ErrorCode.fileNotReady, type == .image || type == .file {
+                    if let im = err as? IMError, type == .image || type == .file,
+                        im.code == ErrorCode.fileNotReady
+                            || (im.code == ErrorCode.fileNotFound && list.local(clientMsgId)?.body.fileId.map {
+                                self.ownFileIds.contains($0)
+                            } == true)
+                    {
                         self.reupload(convId, clientMsgId)
                         return
                     }
@@ -1184,6 +1199,7 @@ public final class IMClient {
         mutesChanged()
         clearSocial()
         autoUsed = []
+        pendingProfileRefetch = []
         active = nil
         lastRead = Int64.min / 2
         emitConversations()
