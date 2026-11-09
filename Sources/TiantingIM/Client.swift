@@ -631,7 +631,9 @@ public final class IMClient {
     /// expiry and similar changes. The modVer the loaded messages reflect is stored with the conversation, so restored
     /// conversations are skipped too when it is unchanged. Without a modVer (older servers) or without a conversation
     /// list, every loaded range is re-fetched as before: messages deleted while disconnected never produce
-    /// `msgDeleted`, only `sync` reveals them (F-ADM-31 rule 5).
+    /// `msgDeleted`, only `sync` reveals them (F-ADM-31 rule 5). Conversations are re-fetched one after another; a
+    /// failure affects only that one (P-39 ②): it keeps its old modVer and is re-fetched on the next reconnect, the
+    /// rest still go ahead.
     private func recheckDeleted(_ convs: [ServerConversation]?) async {
         var vers: [String: Int64?] = [:]
         for c in convs ?? [] { vers[c.convId] = c.modVer }
@@ -652,7 +654,6 @@ public final class IMClient {
                 }
             } catch {
                 log.warn("im: recheck deleted failed: \(describeForLog(error))")
-                return
             }
         }
     }

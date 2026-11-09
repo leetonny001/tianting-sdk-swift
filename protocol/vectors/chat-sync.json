@@ -4,7 +4,7 @@
   "format": {
     "connect": "（重）连接成功，convs 应答为 convs。之后 SDK 发出的每个 sync 都按 convId 回复：errors 里有的回这个错误码，否则回 replies 里的消息（没有就是空列表），hasMore=false，直到不再发 sync。maxSeq 等于已加载的最大 seq，所以只有重拉，没有补拉",
     "disconnect": "连接断开（不是退出登录），之后按 SDK 的重连规则重连，由下一步 connect 完成",
-    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同，用例里出错的步骤只有一个已加载的会话）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）和 file 的 name",
+    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同；某个会话重拉失败只影响它自己，其余会话照拉（P-39 ②），所以集合和顺序无关）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）和 file 的 name",
     "load": "App 打开会话加载最新一页（loadHistory），SDK 发出的 sync 回复 messages，hasMore=false。messages 为空时 SDK 可以不发请求",
     "self": "登录用户。会话 c2c:alice:bob 的对方是 bob",
     "会话": "{convId, maxSeq, modVer?} 展开为 convs 里的会话：type 按前缀，name=convId，readSeq=maxSeq，minSeq=1，unread=0，lastMsg=null，updatedAt=0；modVer 不写表示老服务端没有这个字段",
@@ -1018,6 +1018,383 @@
                   "type": "file",
                   "fileId": "F2",
                   "name": "ZXQ-FILE-NAME.pdf"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "多个会话要重拉、中间一个失败：其余照拉并记新的 modVer，失败的下次重连再拉",
+      "rule": "F-RCL-03 规则 2（P-39 ②）",
+      "acs": [
+        "AC-RCL-03-11"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 3
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 1,
+              "modVer": 7
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 1,
+              "modVer": 1
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {}
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "image",
+              "fileId": "F1"
+            },
+            {
+              "seq": 2,
+              "type": "file",
+              "fileId": "F2",
+              "name": "ZXQ-FILE-NAME.pdf"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1"
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "ZXQ-FILE-NAME.pdf"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "image",
+              "fileId": "G1F"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1"
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "ZXQ-FILE-NAME.pdf"
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G1F"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g2",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "image",
+              "fileId": "G2F"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1"
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "ZXQ-FILE-NAME.pdf"
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G1F"
+                }
+              ],
+              "group:g2": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G2F"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 4
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 1,
+              "modVer": 8
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 1,
+              "modVer": 2
+            }
+          ],
+          "replies": {
+            "c2c:alice:bob": [
+              {
+                "seq": 1,
+                "type": "image",
+                "fileId": "F1",
+                "expired": true
+              },
+              {
+                "seq": 2,
+                "type": "file",
+                "fileId": "F2",
+                "name": "",
+                "expired": true
+              }
+            ],
+            "group:g2": [
+              {
+                "seq": 1,
+                "type": "image",
+                "fileId": "G2F",
+                "expired": true
+              }
+            ]
+          },
+          "errors": {
+            "group:g1": 5000
+          },
+          "expect": {
+            "syncs": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "filesExpired": [
+              "F1",
+              "F2",
+              "G2F"
+            ],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1",
+                  "expired": true
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "",
+                  "expired": true
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G1F"
+                }
+              ],
+              "group:g2": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G2F",
+                  "expired": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 4
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 1,
+              "modVer": 8
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 1,
+              "modVer": 2
+            }
+          ],
+          "replies": {
+            "group:g1": [
+              {
+                "seq": 1,
+                "type": "image",
+                "fileId": "G1F",
+                "expired": true
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "group:g1"
+            ],
+            "filesExpired": [
+              "G1F"
+            ],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1",
+                  "expired": true
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "",
+                  "expired": true
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G1F",
+                  "expired": true
+                }
+              ],
+              "group:g2": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G2F",
+                  "expired": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 4
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 1,
+              "modVer": 8
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 1,
+              "modVer": 2
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "F1",
+                  "expired": true
+                },
+                {
+                  "seq": 2,
+                  "type": "file",
+                  "fileId": "F2",
+                  "name": "",
+                  "expired": true
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G1F",
+                  "expired": true
+                }
+              ],
+              "group:g2": [
+                {
+                  "seq": 1,
+                  "type": "image",
+                  "fileId": "G2F",
+                  "expired": true
                 }
               ]
             }

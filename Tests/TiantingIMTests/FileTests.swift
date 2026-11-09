@@ -947,6 +947,33 @@ final class FileExpiryTests: FileTestCase {
         XCTAssertFalse(holds(h.im.debugExport(), SECRET_NAME))
     }
 
+    // F-RCL-03 rule 2, P-39 ②: a failed re-sync is skipped, the others still go ahead.
+    func testFailedResyncDoesNotStopTheOthersAndIsRetriedNextTime() async throws {
+        let (h, c1) = try await loaded()
+        c1.drop(1006)
+        let c2 = await reconnect(h)
+        c2.ack("convs", ["convs": [conv(AB, maxSeq: 2, modVer: 4), conv(G1, maxSeq: 1, modVer: 8)], "truncated": false])
+        await settle()
+        XCTAssertEqual(c2.last("sync")?.data?["convId"], .string(AB))
+        c2.ackError("sync", 5000)
+        await settle()
+        // AB failing does not stop the round: G1 is re-synced next.
+        XCTAssertEqual(c2.last("sync")?.data?["convId"], .string(G1))
+        c2.ack("sync", ["messages": [img(G1, 1, "G1F", expired: true)], "hasMore": false])
+        await settle()
+        XCTAssertEqual(h.im.messages(G1)[0].body.image?.expired, true)
+        XCTAssertNotEqual(h.im.messages(AB)[0].body.image?.expired, true)
+        XCTAssertEqual(c2.frames("sync").compactMap { $0.data?["convId"]?.stringValue }, [AB, G1])
+        c2.drop(1006)
+        let c3 = await reconnect(h)
+        c3.ack("convs", ["convs": [conv(AB, maxSeq: 2, modVer: 4), conv(G1, maxSeq: 1, modVer: 8)], "truncated": false])
+        await settle()
+        c3.ack("sync", ["messages": [img(AB, 1, "F1", expired: true), fileMsg(AB, 2, "F2", expired: true)], "hasMore": false])
+        await settle()
+        XCTAssertEqual(c3.frames("sync").compactMap { $0.data?["convId"]?.stringValue }, [AB])
+        XCTAssertEqual(h.im.messages(AB)[0].body.image?.expired, true)
+    }
+
     func testOlderServerWithoutModVerStillResyncsEverything() async throws {
         let (h, c1) = try await loaded()
         c1.drop(1006)
