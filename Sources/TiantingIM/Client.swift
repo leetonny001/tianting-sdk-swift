@@ -41,6 +41,14 @@ public struct IMClientOptions {
     /// Where the push cursor lives (PRD-live 4.9), apart from the local database: it survives logout, kicks, corruption and
     /// schema upgrades. nil keeps it in memory, so every new instance replays the inbox from 0.
     public var pushCursorStore: PushCursorStore? = FilePushCursorStore()
+    /// Images and files (PRD-chat 13.1). Without it `sendImage`, `sendFile`, `getFileUrls` and `download` throw.
+    public var files: FileClient?
+    /// The sandbox for copies of files being sent (F-FILE-07 rule 2), one folder per user inside it, cleared at logout.
+    /// Default: `databaseDirectory/tianting-attachments`, or the temporary directory when there is no database.
+    public var attachmentDirectory: URL?
+    /// The download cache, keyed by fileId + variant (F-FILE-04 rule 5), one folder per user, cleared at logout.
+    /// Default: the caches directory.
+    public var fileCacheDirectory: URL?
 
     // Test injection (FE-007).
     public var transport: IMTransport?
@@ -85,6 +93,9 @@ public enum IMEvent: Sendable {
     case recoveryCodeUnacked
     /// Someone's profile changed; read `profileOf` / `displayName` (F-ACC-06: my nickname shows at once).
     case profileChanged(userId: String)
+    /// These files expired or their message was deleted (F-FILE-06 rule 3, AC-FILE-06-12): the SDK already dropped their
+    /// URLs and its cached downloads; the app drops anything it cached by fileId + variant.
+    case filesExpired([String])
 }
 
 public struct SecurityNotice: Sendable, Equatable {
@@ -165,10 +176,21 @@ public final class IMClient {
     let pushSync: PushSync
     private let databaseDirectory: URL?
     private let maxCached: Int
+    let files: FileClient?
+    let attachmentRoot: URL
+    let fileCacheRoot: URL
+    /// Unsent attachments' bytes (clientMsgId -> sandbox names). Kept until sent, kept on failure, cleared at logout.
+    var sources: [String: AttachmentSource] = [:]
+    var producers: [String: @MainActor () async throws -> ProcessedImage] = [:]
+    var progressHandlers: [String: @Sendable (Int64, Int64) -> Void] = [:]
+    var uploadQueue: [(convId: String, clientMsgId: String)] = []
+    var job: UploadJob?
+    /// What the outbox table holds, to write only what changed.
+    var outboxWritten: [String: OutboxRow] = [:]
 
     var store: Store
     var me = ""
-    private var autoUsed: Set<String> = []  // clientMsgIds that already used their one automatic resend
+    var autoUsed: Set<String> = []  // clientMsgIds that already used their one automatic resend
     private var gapTimers: [String: TimerHandle] = [:]
     private var active: String?
     private var lastRead: Int64 = Int64.min / 2
@@ -208,6 +230,15 @@ public final class IMClient {
         isVisible = o.isVisible ?? defaultIsVisible
         databaseDirectory = o.databaseDirectory
         maxCached = o.maxCachedMessagesPerConversation
+        files = o.files
+        let tmp = FileManager.default.temporaryDirectory
+        attachmentRoot =
+            o.attachmentDirectory ?? o.databaseDirectory?.appendingPathComponent("tianting-attachments")
+            ?? tmp.appendingPathComponent("tianting-attachments")
+        fileCacheRoot =
+            o.fileCacheDirectory
+            ?? (FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? tmp)
+            .appendingPathComponent("tianting-files")
         let clockRef = clock
         profiles = ProfileCache(now: { MainActor.assumeIsolated { clockRef.now() } })
         conn = Connection(
@@ -400,9 +431,17 @@ public final class IMClient {
     public var databaseURL: URL? { database?.url }
 
     /// Manually resends a failed message with its original clientMsgId (PRD F-MSG-03 rule 2).
+    ///
+    /// Images and files (F-FILE-07 rule 4): a completed upload reuses its fileId, no new upload (AC-FILE-07-2); one that
+    /// did not complete uploads again from the sandbox copy (a new fileId); without the copy nothing happens and the error
+    /// becomes `sourceMissing` ("原文件已不可用，请重新选择", delete only).
     public func retry(_ convId: String, _ clientMsgId: String) {
         let list = store.list(convId)
         guard let m = list.local(clientMsgId), m.status == .failed else { return }
+        if m.isAttachment, m.body.fileId == nil {
+            retryUpload(convId, clientMsgId)
+            return
+        }
         if conn.state == .connected {
             dispatch(convId, clientMsgId)
         } else {
@@ -410,6 +449,7 @@ public final class IMClient {
             list.update(clientMsgId) {
                 $0.status = .queued
                 $0.error = nil
+                $0.errorReason = nil
             }
             emitMessages(convId)
         }
@@ -420,6 +460,7 @@ public final class IMClient {
     @discardableResult
     public func removeFailed(_ convId: String, _ clientMsgId: String) -> Bool {
         guard store.list(convId).removeFailed(clientMsgId) else { return false }
+        releaseSource(clientMsgId)
         emitMessages(convId)
         return true
     }
@@ -560,8 +601,10 @@ public final class IMClient {
     }
 
     private func runInitialSync() async {
+        var convs: [ServerConversation]?
         do {
             let ack = try await conn.request(ConvsAck.self, "convs")
+            convs = ack.convs
             applyConvs(ack)
             for c in ack.convs { try await catchUp(c) }
             maybeReportRead()
@@ -571,18 +614,28 @@ public final class IMClient {
         // convs first, then one social round from the local socialVer (F-SOC-06 rule 10).
         social.needSync = true
         startSocialSync()
-        await recheckDeleted()
+        await recheckDeleted(convs)
     }
 
-    /// Re-fetches loaded ranges after a reconnect: messages deleted while disconnected never produce `msgDeleted`, only
-    /// `sync` reveals them (F-ADM-31 rule 5). Restored conversations are checked once per launch, conversations loaded
-    /// from the network in this login on every reconnect.
-    private func recheckDeleted() async {
+    /// Re-fetches loaded ranges after a reconnect, only for conversations whose modVer changed (F-RCL-03 rule 2): file
+    /// expiry and similar changes. The modVer the loaded messages reflect is stored with the conversation, so restored
+    /// conversations are skipped too when it is unchanged. Without a modVer (older servers) or without a conversation
+    /// list, every loaded range is re-fetched as before: messages deleted while disconnected never produce
+    /// `msgDeleted`, only `sync` reveals them (F-ADM-31 rule 5).
+    private func recheckDeleted(_ convs: [ServerConversation]?) async {
+        var vers: [String: Int64?] = [:]
+        for c in convs ?? [] { vers[c.convId] = c.modVer }
         for (convId, from, to) in store.loadedRanges() {
+            let ver = vers[convId] ?? nil
+            if convs != nil, let ver, store.checkedModVer(convId) == ver {
+                store.list(convId).restoredUnverified = false
+                continue
+            }
             do {
                 let list = store.list(convId)
                 let changed = try await syncAfter(convId, after: from - 1, until: to)
                 list.restoredUnverified = false
+                if let ver { store.markChecked(convId, ver) }
                 if changed {
                     emitMessages(convId)
                     emitConversations()
@@ -939,12 +992,14 @@ public final class IMClient {
         clearSocial()
         for id in store.allListIds() { failPending(id) }
         destroyDatabase()
+        clearFileData()
         emit(.fatal(r))
     }
 
     private func failPending(_ convId: String) {
         let list = store.list(convId)
         let pending = list.pendingMessages()
+        for m in pending { dropUploadJob(m.clientMsgId) }
         for m in pending {
             list.update(m.clientMsgId) {
                 $0.status = .failed
@@ -957,7 +1012,7 @@ public final class IMClient {
 
     // MARK: Sending
 
-    private func dispatch(_ convId: String, _ clientMsgId: String) {
+    func dispatch(_ convId: String, _ clientMsgId: String) {
         let list = store.list(convId)
         guard
             let m = list.update(
@@ -974,6 +1029,7 @@ public final class IMClient {
         // hold its own copy of the text.
         let onAck: @MainActor (SendAck) -> Void = { [weak self, weak list] ack in
             guard let self, let list else { return }
+            self.releaseSource(clientMsgId)  // Sent: the sandbox copy goes (F-FILE-07 rule 2).
             _ = self.store.applyServerMessage(
                 ServerMessage(
                     msgId: ack.msgId, clientMsgId: clientMsgId, convId: ack.convId, seq: ack.seq, from: self.me,
@@ -1013,6 +1069,10 @@ public final class IMClient {
                     if let im = err as? IMError, im.code == ErrorCode.muted { self.onMutedAck(im.details) }
                     // Another path may already have changed the state (e.g. kicked): only handle "still sending".
                     guard list.local(clientMsgId)?.status == .sending else { return }
+                    if let im = err as? IMError, im.code == ErrorCode.fileNotReady, type == .image || type == .file {
+                        self.reupload(convId, clientMsgId)
+                        return
+                    }
                     if let im = err as? IMError {
                         self.fail(convId, clientMsgId, .code(im.code))
                     } else if case IMConnectionError.timeout = err {
@@ -1029,7 +1089,7 @@ public final class IMClient {
             })
     }
 
-    private func fail(_ convId: String, _ clientMsgId: String, _ error: SendFailure) {
+    func fail(_ convId: String, _ clientMsgId: String, _ error: SendFailure) {
         let list = store.list(convId)
         guard let m = list.local(clientMsgId), m.status == .sending else { return }  // A late ack already won.
         list.update(clientMsgId) {
@@ -1096,6 +1156,11 @@ public final class IMClient {
         commit()
         emit(.messages(convId: convId, messages: store.messages(convId)))
         emitPendingCount()
+        let expired = store.takeExpiredFiles()
+        if !expired.isEmpty {
+            for id in expired { forgetFile(id) }
+            emit(.filesExpired(expired))
+        }
     }
 
     private func emitPendingCount() {
@@ -1112,6 +1177,7 @@ public final class IMClient {
         if let r = readTimer { clock.clearTimeout(r) }
         readTimer = nil
         destroyDatabase()
+        clearFileData()
         pushSync.logout()
         store = Store(me: { [unowned self] in MainActor.assumeIsolated { self.me } })
         mutes.clear()
@@ -1133,6 +1199,7 @@ public final class IMClient {
             database = try openOrRebuild(url: url)
             let chat = try database!.loadChat(maxMessagesPerConversation: maxCached)
             store.restore(convStates: chat.conversations, messages: chat.messages)
+            restoreOutbox(try database!.loadOutbox())
             if let s = try database!.loadSocial() { restoreSocial(s) }
             emitConversations()
             emitSocial()
@@ -1159,10 +1226,12 @@ public final class IMClient {
     func commit() {
         guard let db = database else {
             _ = store.drainChanges()
+            outboxWritten = [:]
             return
         }
         do {
             try db.apply(store.drainChanges())
+            try writeOutbox(db)
         } catch {
             dropDatabaseAfterFailure(error)
         }

@@ -1,21 +1,40 @@
 import Foundation
 
-/// Send state (PRD F-MSG-03). `queued`: waiting while offline. Everything from the server is `sent`.
+/// Send state (PRD F-MSG-03; attachments PRD-chat F-FILE-07). Everything from the server is `sent`.
+/// Attachments: `processing` (the app's image work) -> `uploading` (ask, PUT, complete) -> `queued` (ready to send:
+/// completed, waiting for the connection) -> `sending` -> `sent`; any step can go to `failed`. Text has neither of the
+/// first two.
 public enum MessageStatus: String, Sendable, Codable {
-    case queued, sending, sent, failed
+    case processing, uploading, queued, sending, sent, failed
 }
 
-/// Why a send failed: a server error code, or a local timeout / kick.
+/// Why a send failed: a server error code (4292 upload quota, 4290 with `errorReason == "uploadPendingLimit"`, 4139,
+/// 4150, 4096, 5032 ...), or a local reason.
 public enum SendFailure: Sendable, Hashable, Codable, CustomStringConvertible {
     case code(Int)
     case timeout
     case kicked
+    /// Uploading hit a network error or the object store refused the PUT.
+    case network
+    /// The app's image processing failed: "无法处理这张图片，请用文件方式发送".
+    case process
+    /// Copying the file into the SDK's sandbox failed: "存储空间不足".
+    case storage
+    /// A re-upload is needed but the sandbox copy is gone: "原文件已不可用，请重新选择" (delete only).
+    case sourceMissing
+    /// Processing or uploading when the app was killed: failed on the next start, never resumed (F-FILE-07 rule 3).
+    case interrupted
 
     public var description: String {
         switch self {
         case .code(let c): return String(c)
         case .timeout: return "timeout"
         case .kicked: return "kicked"
+        case .network: return "network"
+        case .process: return "process"
+        case .storage: return "storage"
+        case .sourceMissing: return "sourceMissing"
+        case .interrupted: return "interrupted"
         }
     }
 }
@@ -36,6 +55,11 @@ public struct Message: Sendable, Hashable, Codable {
     /// Deleted (PRD-admin F-ADM-31): seq, msgId, sender and time stay, the body is empty.
     public var deleted: Bool?
     public var deletedAt: Int64?
+    /// The error code's reason, e.g. 4290's `uploadPendingLimit`.
+    public var errorReason: String? = nil
+
+    /// An image or file message (C2).
+    public var isAttachment: Bool { type == .image || type == .file }
 }
 
 /// One conversation as the UI sees it.
@@ -53,6 +77,8 @@ public struct Conversation: Sendable, Hashable, Codable {
     public var memberCount: Int?
     /// My role in a group (M4); nil for c2c and older servers.
     public var myRole: GroupRole?
+    /// How existing messages look, versioned (F-RCL-03 rule 2); nil on older servers.
+    public var modVer: Int64? = nil
 }
 
 /// What is kept after being removed from a group (PRD-ui G-UI-21): the conversation leaves the list but the chat
@@ -70,6 +96,9 @@ public struct ConversationSnapshot: Sendable, Hashable, Codable {
 struct ConvState: Sendable, Hashable, Codable {
     var view: Conversation
     var readBase: Int64
+    /// The modVer the loaded messages reflect (F-RCL-03 rule 2): a reconnect re-syncs only when the server's differs.
+    /// Stored with the conversation, so it survives a cold start.
+    var checkedModVer: Int64? = nil
 }
 
 private let summaryLength = 100
@@ -77,6 +106,17 @@ private let summaryLength = 100
 /// The summary of a deleted last message: keeps no text.
 private func deletedLast(msgId: String, from: String, type: String, ts: Int64) -> LastMsg {
     LastMsg(msgId: msgId, from: from, type: type, text: nil, ts: ts, deleted: true)
+}
+
+/// Marks a body expired; the file name is cleared, as the server does (F-FILE-06 rule 3).
+func expire(_ body: MsgBody) -> MsgBody {
+    var b = body
+    b.image?.expired = true
+    if b.file != nil {
+        b.file?.expired = true
+        b.file?.name = ""
+    }
+    return b
 }
 
 private func summary(_ text: String) -> String {
@@ -98,6 +138,11 @@ final class MessageList {
     private var deletedSeqs: Set<Int64> = []
     // Failed messages the user removed (G-UI-14). They may have reached the server: later acks and syncs stay out.
     private var removedClient: Set<String> = []
+    // Messages whose file is known expired (F-FILE-06 rule 3): `expired` only goes false -> true, a late old sync
+    // cannot turn it back (F-RCL-03 rule 2a).
+    private var expiredIds: Set<String> = []
+    /// File ids that just expired or whose message was deleted in a merge; the client takes them to clear caches.
+    var newlyExpired: [String] = []
 
     /// The earliest loaded seq (for paging back); 0 when nothing is loaded.
     var oldestSeq: Int64 = 0
@@ -112,22 +157,38 @@ final class MessageList {
     fileprivate var dirtySeqs: Set<Int64> = []
     fileprivate var clearedOnDisk = false
 
-    /// Merges a server message: dedupes by msgId, merges a pending local message by clientMsgId. An existing message
-    /// can only become deleted. Returns the merged message, or nil when nothing changed.
+    /// Merges a server message: dedupes by msgId, merges a pending local message by clientMsgId. Existing messages
+    /// merge monotonically (F-RCL-03 rule 2a): `deleted` and a file's `expired` only go false -> true, deletedIds win;
+    /// a late old sync carrying text or `expired == false` writes nothing back. Returns the merged message, or nil when
+    /// nothing changed.
     func addServer(_ m: ServerMessage) -> Message? {
         if removedClient.contains(m.clientMsgId) { return nil }
         touched = true
         let deleted = m.deleted == true || isDeleted(msgId: m.msgId, seq: m.seq)
         if byMsgId.contains(m.msgId) {
-            guard deleted, let old = bySeq[m.seq], old.deleted != true else { return nil }
-            return wipe(old, deletedAt: m.deletedAt)
+            guard let old = bySeq[m.seq], old.deleted != true else { return nil }
+            if deleted { return wipe(old, deletedAt: m.deletedAt) }
+            if m.body?.fileExpired == true, !old.body.fileExpired {
+                expiredIds.insert(m.msgId)
+                var next = old
+                next.body = expire(old.body)
+                noteExpired(old.body)
+                return replace(old, next)
+            }
+            return nil
         }
         if let local = byClient[m.clientMsgId], local.seq == nil, local.from == m.from {
             unsent.removeAll { $0.clientMsgId == local.clientMsgId }
         }
+        var body = m.body ?? MsgBody()
+        if !deleted, body.fileExpired || expiredIds.contains(m.msgId) {
+            if !expiredIds.contains(m.msgId) { noteExpired(body) }
+            expiredIds.insert(m.msgId)
+            body = expire(body)
+        }
         let msg = Message(
             clientMsgId: m.clientMsgId, msgId: m.msgId, seq: m.seq, convId: m.convId, from: m.from, type: m.type,
-            body: deleted ? MsgBody() : (m.body ?? MsgBody()), ts: m.ts, status: .sent, error: nil,
+            body: deleted ? MsgBody() : body, ts: m.ts, status: .sent, error: nil,
             deleted: deleted ? true : nil, deletedAt: m.deletedAt)
         insert(msg, seq: m.seq)
         return msg
@@ -139,6 +200,25 @@ final class MessageList {
         insert(msg, seq: seq)
         dirtySeqs.remove(seq)
         restoredUnverified = true
+        if msg.body.fileExpired, let id = msg.msgId { expiredIds.insert(id) }
+    }
+
+    private func replace(_ old: Message, _ next: Message) -> Message {
+        if let seq = old.seq {
+            bySeq[seq] = next
+            dirtySeqs.insert(seq)
+        }
+        byClient[old.clientMsgId] = next
+        return next
+    }
+
+    private func noteExpired(_ body: MsgBody) {
+        if let id = body.fileId, !newlyExpired.contains(id) { newlyExpired.append(id) }
+    }
+
+    /// Whether a loaded message carries this file and it is known expired.
+    func hasExpiredFile(_ fileId: String) -> Bool {
+        bySeq.values.contains { $0.body.fileId == fileId && $0.body.fileExpired }
     }
 
     private func insert(_ msg: Message, seq: Int64) {
@@ -168,6 +248,7 @@ final class MessageList {
     }
 
     private func wipe(_ old: Message, deletedAt: Int64?) -> Message {
+        noteExpired(old.body)  // The file's caches go too (F-RCL-03 rule 3).
         var next = old
         next.body = MsgBody()
         next.deleted = true
@@ -205,7 +286,12 @@ final class MessageList {
 
     /// Removes one failed local message and remembers its clientMsgId. Returns false unless it is failed.
     func removeFailed(_ clientMsgId: String) -> Bool {
-        guard let m = byClient[clientMsgId], m.status == .failed, m.seq == nil else { return false }
+        removeUnsent(clientMsgId, [.failed])
+    }
+
+    /// Removes a local message without a seq whose status is in `statuses` (cancelling an upload, AC-FILE-02-5).
+    func removeUnsent(_ clientMsgId: String, _ statuses: Set<MessageStatus>) -> Bool {
+        guard let m = byClient[clientMsgId], statuses.contains(m.status), m.seq == nil else { return false }
         unsent.removeAll { $0.clientMsgId == clientMsgId }
         byClient[clientMsgId] = nil
         removedClient.insert(clientMsgId)
@@ -241,8 +327,14 @@ final class MessageList {
         clearedOnDisk = true
     }
 
+    /// Local messages still in progress (processing, uploading, queued, sending).
     func pendingMessages() -> [Message] {
-        unsent.filter { $0.status == .queued || $0.status == .sending }
+        unsent.filter { $0.status != .failed && $0.status != .sent }
+    }
+
+    /// Unsent image and file messages: the outbox that survives a restart (F-FILE-07 rule 3).
+    func unsentAttachments() -> [Message] {
+        unsent.filter(\.isAttachment)
     }
 
     func snapshot() -> [Message] {
@@ -389,8 +481,47 @@ final class Store {
         }
         let view = Conversation(
             convId: c.convId, type: c.type, name: c.name, maxSeq: c.maxSeq, readSeq: c.readSeq, minSeq: c.minSeq,
-            unread: c.unread, lastMsg: last, updatedAt: c.updatedAt, memberCount: c.memberCount, myRole: c.myRole)
-        return ConvState(view: view, readBase: c.maxSeq - c.unread)
+            unread: c.unread, lastMsg: last, updatedAt: c.updatedAt, memberCount: c.memberCount, myRole: c.myRole,
+            modVer: c.modVer)
+        // Not loaded yet: what loads later is at least this version, so it is the baseline. Loaded: keep the old value
+        // until a re-sync succeeds.
+        let loaded = (msgs[c.convId]?.oldestSeq ?? 0) > 0
+        let checked = loaded ? convs[c.convId]?.checkedModVer : (c.modVer ?? convs[c.convId]?.checkedModVer)
+        return ConvState(view: view, readBase: c.maxSeq - c.unread, checkedModVer: checked)
+    }
+
+    /// The modVer the loaded messages of a conversation reflect.
+    func checkedModVer(_ convId: String) -> Int64? {
+        convs[convId]?.checkedModVer
+    }
+
+    /// A re-sync of a conversation's loaded range succeeded at this modVer.
+    func markChecked(_ convId: String, _ modVer: Int64) {
+        guard var c = convs[convId], c.checkedModVer != modVer else { return }
+        c.checkedModVer = modVer
+        convs[convId] = c
+        dirtyConvs.insert(convId)
+    }
+
+    /// Takes the file ids that expired or whose message was deleted in a merge: the caller clears URL and file caches
+    /// (F-FILE-06 rule 3, AC-FILE-06-12).
+    func takeExpiredFiles() -> [String] {
+        var out: [String] = []
+        for l in msgs.values where !l.newlyExpired.isEmpty {
+            out += l.newlyExpired
+            l.newlyExpired = []
+        }
+        return out
+    }
+
+    /// Whether a loaded message's file is known expired (no URL request then, AC-FILE-06-6).
+    func fileExpired(_ fileId: String) -> Bool {
+        msgs.values.contains { $0.hasExpiredFile(fileId) }
+    }
+
+    /// All unsent image and file messages.
+    func unsentAttachments() -> [Message] {
+        msgs.values.flatMap { $0.unsentAttachments() }
     }
 
     /// Moves the read position forward only (own report, other device, sending counts as reading).
@@ -561,6 +692,11 @@ final class Store {
         }
         dirtyConvs = []
         removedConvs = []
+    }
+
+    /// Puts a restored outbox message back (unsent, so not in the messages table).
+    func restoreUnsent(_ m: Message) {
+        list(m.convId).addLocal(m)
     }
 
     func pendingCount() -> Int {

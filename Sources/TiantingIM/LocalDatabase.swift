@@ -29,9 +29,13 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 /// - `temp_store=MEMORY`: no temporary files.
 /// When SQLite refuses `secure_delete`, wipes fall back to VACUUM.
 ///
-/// The token is never stored. Unsent messages stay in memory.
+/// The token is never stored. Unsent text stays in memory; unsent images and files live in `outbox` with the names of
+/// their sandbox copies (F-FILE-07 rules 2, 3). Presigned URLs are never stored.
+///
+/// Version 2 (C2) adds `outbox`; message and conversation JSON gained optional fields only, so version 1 is upgraded in
+/// place and keeps its rows. Any other version is dropped and refilled from the server.
 final class LocalDatabase {
-    static let schemaVersion: Int32 = 1
+    static let schemaVersion: Int32 = 2
 
     let url: URL
     private var db: OpaquePointer?
@@ -73,7 +77,14 @@ final class LocalDatabase {
         }
         try exec("PRAGMA synchronous=NORMAL")
         try exec("PRAGMA temp_store=MEMORY")
-        let version = try pragmaInt("PRAGMA user_version")
+        var version = try pragmaInt("PRAGMA user_version")
+        if version == 1 {
+            try inTransaction {
+                try exec(LocalDatabase.outboxSchema)
+                try exec("PRAGMA user_version=2")
+            }
+            version = 2
+        }
         if version != Int64(LocalDatabase.schemaVersion) {
             // A cache: anything older is simply dropped and refilled from the server.
             try exec(
@@ -84,6 +95,7 @@ final class LocalDatabase {
                 DROP TABLE IF EXISTS friends;
                 DROP TABLE IF EXISTS friend_requests;
                 DROP TABLE IF EXISTS blocks;
+                DROP TABLE IF EXISTS outbox;
                 """)
             try createSchema()
         }
@@ -116,8 +128,39 @@ final class LocalDatabase {
             CREATE TABLE friend_requests (user_id TEXT NOT NULL, direction TEXT NOT NULL, item TEXT NOT NULL,
               PRIMARY KEY (user_id, direction));
             CREATE TABLE blocks (user_id TEXT PRIMARY KEY, item TEXT NOT NULL);
+            \(LocalDatabase.outboxSchema)
             PRAGMA user_version=\(LocalDatabase.schemaVersion);
             """)
+    }
+
+    /// Unsent images and files (C2): the message and its source (sandbox file names, never URLs).
+    static let outboxSchema =
+        "CREATE TABLE outbox (client_msg_id TEXT PRIMARY KEY, conv_id TEXT NOT NULL, message TEXT NOT NULL, source TEXT);"
+
+    // MARK: Outbox
+
+    /// Writes the outbox changes in one transaction.
+    func saveOutbox(upsert: [(Message, AttachmentSource?)], delete: [String]) throws {
+        guard !upsert.isEmpty || !delete.isEmpty else { return }
+        try inTransaction {
+            for id in delete {
+                try run("DELETE FROM outbox WHERE client_msg_id = ?", [.text(id)])
+            }
+            for (m, src) in upsert {
+                let source: Bind = try src.map { .text(try encode($0)) } ?? .null
+                try run(
+                    "INSERT OR REPLACE INTO outbox (client_msg_id, conv_id, message, source) VALUES (?, ?, ?, ?)",
+                    [.text(m.clientMsgId), .text(m.convId), .text(try encode(m)), source])
+            }
+        }
+    }
+
+    func loadOutbox() throws -> [(Message, AttachmentSource?)] {
+        var out: [(Message, AttachmentSource?)] = []
+        try query("SELECT message, source FROM outbox ORDER BY rowid", []) { stmt in
+            if let m = decodeColumn(Message.self, stmt, 0) { out.append((m, decodeColumn(AttachmentSource.self, stmt, 1))) }
+        }
+        return out
     }
 
     func close() {
@@ -277,6 +320,7 @@ final class LocalDatabase {
     private enum Bind {
         case text(String)
         case int(Int64)
+        case null
     }
 
     private func encode<T: Encodable>(_ value: T) throws -> String {
@@ -324,6 +368,7 @@ final class LocalDatabase {
             switch b {
             case .text(let s): sqlite3_bind_text(stmt, idx, s, -1, sqliteTransient)
             case .int(let n): sqlite3_bind_int64(stmt, idx, n)
+            case .null: sqlite3_bind_null(stmt, idx)
             }
         }
         return stmt

@@ -41,6 +41,7 @@ final class SchemaValidator: @unchecked Sendable {
         "$schema", "$id", "$defs", "title", "description", "$comment", "default", "examples", "$ref", "type", "const", "enum", "properties",
         "required", "additionalProperties", "items", "minItems", "maxItems", "minLength", "maxLength", "pattern",
         "minimum", "maximum", "minProperties", "maxProperties", "oneOf", "anyOf", "allOf", "not", "if", "then", "else",
+        "propertyNames",
     ]
 
     private func resolve(_ ref: String) -> JSONValue {
@@ -103,6 +104,7 @@ final class SchemaValidator: @unchecked Sendable {
             if let m = schema["minProperties"]?.intValue, o.count < m { return false }
             if let m = schema["maxProperties"]?.intValue, o.count > m { return false }
             for r in schema["required"]?.arrayValue ?? [] where o[r.stringValue ?? ""] == nil { return false }
+            if let names = schema["propertyNames"], !o.keys.allSatisfy({ check(.string($0), names) }) { return false }
             let props: [String: JSONValue]
             if case .object(let p)? = schema["properties"] { props = p } else { props = [:] }
             for (k, value) in o {

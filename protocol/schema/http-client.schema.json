@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://im-mvp.local/protocol/http-client.schema.json",
   "title": "客户端 HTTP 接口（/v1）",
-  "description": "PRD-chat 第 4.2、11.2 节，本批 C1 账号部分；文件接口随 BE-401。请求和响应都可能增加字段，收到不认识的字段要忽略，所以请求和响应对象都不写 additionalProperties:false。错误响应一律 ErrorResponse，HTTP 状态取 errors.json。认证用 Authorization: Bearer，token 不进 URL。",
+  "description": "PRD-chat 第 4.2、11.2 节，C1 账号部分和 C2 文件部分（BE-401）。请求和响应都可能增加字段，收到不认识的字段要忽略，所以请求和响应对象都不写 additionalProperties:false。错误响应一律 ErrorResponse，HTTP 状态取 errors.json。认证用 Authorization: Bearer，token 不进 URL。",
   "$defs": {
     "UserId": {
       "type": "string",
@@ -99,8 +99,29 @@
             "deviceNameMaxLen": {
               "type": "integer",
               "minimum": 0
+            },
+            "imageMaxBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "thumbMaxBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fileMaxBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "avatarMaxBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "uploadDailyBytes": {
+              "type": "integer",
+              "minimum": 0
             }
-          }
+          },
+          "description": "文件的限制（imageMaxBytes 等）只在 features.files=true 时出现"
         },
         "privacyNotice": {
           "type": "object",
@@ -401,14 +422,243 @@
     },
     "RecoveryCodeResponse": {
       "type": "object",
-      "required": ["recoveryCode", "recoveryCodeGen"],
+      "required": [
+        "recoveryCode",
+        "recoveryCodeGen"
+      ],
       "properties": {
-        "recoveryCode": { "type": "string", "minLength": 1 },
-        "recoveryCodeGen": { "type": "integer", "minimum": 1 }
+        "recoveryCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recoveryCodeGen": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "Empty": {
       "type": "object"
+    },
+    "FileId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "UploadRequest": {
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "size",
+        "mime"
+      ],
+      "description": "F-FILE-01 规则 1。kind=image 必须带 thumb；avatar 的 name 可以是任意值（不保存给他人看）",
+      "properties": {
+        "kind": {
+          "enum": [
+            "image",
+            "file",
+            "avatar"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thumb": {
+          "type": "object",
+          "required": [
+            "size",
+            "mime"
+          ],
+          "properties": {
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "mime": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "PresignedPut": {
+      "type": "object",
+      "required": [
+        "url",
+        "headers",
+        "expiresAt"
+      ],
+      "description": "预签名 PUT：headers 里的头（Content-Type、Content-Length）已签入，必须原样带上。地址不持久化、不写日志",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "UploadResponse": {
+      "type": "object",
+      "required": [
+        "fileId",
+        "put"
+      ],
+      "properties": {
+        "fileId": {
+          "$ref": "#/$defs/FileId"
+        },
+        "put": {
+          "$ref": "#/$defs/PresignedPut"
+        },
+        "thumbPut": {
+          "$ref": "#/$defs/PresignedPut"
+        }
+      }
+    },
+    "CompleteResponse": {
+      "type": "object",
+      "required": [
+        "fileId",
+        "size",
+        "mime"
+      ],
+      "description": "服务端读到的真实值；width、height 只有图片和头像有",
+      "properties": {
+        "fileId": {
+          "$ref": "#/$defs/FileId"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mime": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "FileUrlsRequest": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "description": "F-FILE-04 规则 1：单次最多 50 项，超出 400 / 4131",
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "required": [
+              "fileId",
+              "variant"
+            ],
+            "properties": {
+              "fileId": {
+                "type": "string"
+              },
+              "variant": {
+                "enum": [
+                  "original",
+                  "thumb"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "FileUrlsResponse": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "description": "逐项返回，顺序和请求相同。不可访问的项 code=4048（和不存在的 fileId 完全相同），不影响其他项",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "fileId",
+              "variant"
+            ],
+            "properties": {
+              "fileId": {
+                "type": "string"
+              },
+              "variant": {
+                "enum": [
+                  "original",
+                  "thumb"
+                ]
+              },
+              "url": {
+                "type": "string"
+              },
+              "expiresAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "code": {
+                "type": "integer"
+              }
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "url",
+                  "expiresAt"
+                ],
+                "not": {
+                  "required": [
+                    "code"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "code"
+                ],
+                "not": {
+                  "required": [
+                    "url"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
     }
   },
   "endpoints": {
@@ -493,6 +743,28 @@
       "request": "DeleteCancelRequest",
       "response": "Empty",
       "task": "BE-420"
+    },
+    "POST /v1/files/uploads": {
+      "auth": "bearer",
+      "request": "UploadRequest",
+      "response": "UploadResponse",
+      "task": "BE-432"
+    },
+    "DELETE /v1/files/uploads/{fileId}": {
+      "auth": "bearer",
+      "response": "Empty",
+      "task": "BE-432"
+    },
+    "POST /v1/files/{fileId}/complete": {
+      "auth": "bearer",
+      "response": "CompleteResponse",
+      "task": "BE-433"
+    },
+    "POST /v1/files/urls": {
+      "auth": "bearer",
+      "request": "FileUrlsRequest",
+      "response": "FileUrlsResponse",
+      "task": "BE-435"
     }
   }
 }

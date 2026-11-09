@@ -296,3 +296,120 @@ public final class MemorySessionStore: AccountSessionStore {
         for c in held { c.resume() }
     }
 }
+
+/// One fake object store request (PUT or GET): the test decides progress and the outcome. Cancelling the calling task
+/// fails it, as URLSession does.
+@MainActor
+public final class FakeObjectStoreCall {
+    public let method: String
+    public let url: String
+    public let headers: [String: String]
+    /// PUT: the file the SDK sent (its bytes are read at call time into `body`). GET: where the SDK wants the bytes.
+    public let file: URL
+    public let body: Data
+    public private(set) var settled = false
+    public private(set) var cancelled = false
+    private var continuation: CheckedContinuation<Int, Error>?
+    private let sentProgress: (@Sendable (Int64) -> Void)?
+    private let receivedProgress: (@Sendable (Int64, Int64?) -> Void)?
+
+    init(
+        method: String, url: String, headers: [String: String], file: URL,
+        sent: (@Sendable (Int64) -> Void)?, received: (@Sendable (Int64, Int64?) -> Void)?
+    ) {
+        self.method = method
+        self.url = url
+        self.headers = headers
+        self.file = file
+        body = method == "PUT" ? ((try? Data(contentsOf: file)) ?? Data()) : Data()
+        sentProgress = sent
+        receivedProgress = received
+    }
+
+    private var result: Result<Int, Error>?
+
+    func attach(_ c: CheckedContinuation<Int, Error>) {
+        if let result {
+            c.resume(with: result)
+            return
+        }
+        continuation = c
+    }
+
+    private func finish(_ r: Result<Int, Error>) {
+        result = r
+        continuation?.resume(with: r)
+        continuation = nil
+    }
+
+    /// The size of what was PUT.
+    public var size: Int { body.count }
+
+    /// Reports progress: bytes sent (PUT) or received (GET).
+    public func progress(_ n: Int64, of total: Int64? = nil) {
+        sentProgress?(n)
+        receivedProgress?(n, total)
+    }
+
+    /// Ends the request. A 2xx GET writes `data` to the destination; a 2xx PUT reports all bytes sent first.
+    public func respond(_ status: Int = 200, data: Data = Data()) {
+        guard !settled else { return }
+        settled = true
+        if (200..<300).contains(status) {
+            if method == "PUT" { sentProgress?(Int64(body.count)) }
+            if method == "GET" {
+                try? data.write(to: file)
+                receivedProgress?(Int64(data.count), Int64(data.count))
+            }
+        }
+        finish(.success(status))
+    }
+
+    /// A network error, or a GET broken off after `partial` bytes were written (the SDK must remove them).
+    public func fail(_ message: String = "network error", partial: Data? = nil) {
+        guard !settled else { return }
+        settled = true
+        if let partial { try? partial.write(to: file) }
+        finish(.failure(FakeHttpError(message: message)))
+    }
+
+    func cancel() {
+        guard !settled else { return }
+        cancelled = true
+        fail("cancelled")
+    }
+}
+
+/// A fake object store (PRD-chat 4.5): records every PUT and GET and leaves them open for the test. `auto` answers 200.
+@MainActor
+public final class FakeObjectStore: ObjectStoreTransport {
+    public private(set) var calls: [FakeObjectStoreCall] = []
+    public var auto = false
+
+    public init() {}
+
+    public func put(url: String, headers: [String: String], file: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> Int
+    {
+        let call = FakeObjectStoreCall(method: "PUT", url: url, headers: headers, file: file, sent: progress, received: nil)
+        return try await run(call)
+    }
+
+    public func get(url: String, to destination: URL, progress: @escaping @Sendable (Int64, Int64?) -> Void) async throws -> Int {
+        let call = FakeObjectStoreCall(method: "GET", url: url, headers: [:], file: destination, sent: nil, received: progress)
+        return try await run(call)
+    }
+
+    private func run(_ call: FakeObjectStoreCall) async throws -> Int {
+        calls.append(call)
+        if auto { call.respond(200) }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Int, Error>) in call.attach(c) }
+        } onCancel: {
+            Task { @MainActor in call.cancel() }
+        }
+    }
+
+    public var pending: [FakeObjectStoreCall] { calls.filter { !$0.settled } }
+    public var puts: [FakeObjectStoreCall] { calls.filter { $0.method == "PUT" } }
+    public var gets: [FakeObjectStoreCall] { calls.filter { $0.method == "GET" } }
+}

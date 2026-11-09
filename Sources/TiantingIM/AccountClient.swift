@@ -557,6 +557,12 @@ public final class AccountClient {
         }
         if source == .kicked {
             if isLocalNewer(lineage, than: rejected) { return record(.useLocal) }
+            // Access ends at the absolute limit (P-35 L1): a refresh cannot get a later token. The server kicks
+            // tokenExpired in the limit's last second; the session ends at once instead of asking one more time.
+            if s.absoluteExpiresAt != nil, s.accessExpiresAt == s.absoluteExpiresAt {
+                endSession(SessionEnd(action: .login, dialog: .sessionExpired, reason: "expired"))
+                return record(.login(dialog: .sessionExpired, recoverBefore: nil))
+            }
             mustRefresh = true
         }
         return record(decideRefresh(source))
@@ -1239,6 +1245,13 @@ public final class AccountClient {
         var o: [String: JSONValue] = ["platform": .string(platform.rawValue)]
         if let deviceName { o["deviceName"] = .string(deviceName) }
         return o
+    }
+
+    /// Other Bearer endpoints under /v1 (the file endpoints, PRD-chat F-FILE-01, 04; RS5-10: HTTP and WS share the
+    /// token). 4011 is handled as for the account endpoints (rule 7): a newer local token is used at once, otherwise one
+    /// refresh is awaited; at most 2 retries per request. Implements `FileAuth`.
+    public func authorized(_ method: HttpMethod, _ path: String, body: JSONValue?) async throws -> JSONValue {
+        try await authed(JSONValue.self, method, path, body: body)
     }
 
     /// A Bearer request outside the queue: on 4011 retries with the local token, or waits for one refresh (rule 7).

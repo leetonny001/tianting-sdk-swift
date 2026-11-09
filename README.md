@@ -99,9 +99,38 @@ options.pushCursorStore = nil                              // 只在内存：每
 - SDK 不把 `data` 写进日志；`Push` 的 `description`、`dump` 也不含 `data`。服务端未开启（4001）时静默，这次连接内不再发。
 - 行为判据是 `protocol/vectors/push-sync.json`，71 个用例全跑（`Tests/TiantingIMTests/PushVectorTests.swift`）。
 
+## 图片和文件（PRD-chat C2，第 6、13.1 节）
+
+```swift
+var o = IMClientOptions(url: url)
+o.files = FileClient(auth: account)   // AccountClient 实现 FileAuth（4011 按规则 7）；演示模式用 StaticTokenAuth(baseUrl:token:)
+o.attachmentDirectory = ...           // 发送前的沙盒副本，默认 databaseDirectory/tianting-attachments
+o.fileCacheDirectory = ...            // 下载缓存（键 fileId + variant），默认 Caches/tianting-files
+let im = IMClient(options: o)
+
+// 图片处理（压缩、缩略图 ≤ 480、去 EXIF）在 App 里做，SDK 只收处理好的文件，先复制进自己的沙盒再上传。
+try im.sendImage(convId, ProcessedImage(original: LocalUpload(file: o, mime: "image/jpeg"),
+                                        thumb: LocalUpload(file: t, mime: "image/jpeg"), width: w, height: h),
+                 onProgress: { sent, total in ... })
+try im.sendImage(convId, process: { try await processPicked(item) })  // 先显示"处理中"，轮到它才处理（并发 1）
+try im.sendFile(convId, FileInput(file: url, name: name, mime: mime))
+im.cancelUpload(convId, clientMsgId)  // 中止上传、发 DELETE、消息消失；已经在 send 的不能取消；失败的也能删
+im.retry(convId, clientMsgId)         // 已 complete 的复用 fileId；没传完的从沙盒副本从头传；没有副本时 error = .sourceMissing
+let urls = try await im.getFileUrls([FileUrlItem(fileId: id, variant: .thumb)])  // 同一轮合并成一批（≤ 50），地址只在内存
+let file = try await im.download(fileId: id, variant: .original, progress: { got, total in ... })  // 取消调用它的 Task 即可
+im.cachedFile(fileId: id, variant: .thumb)  // 已下载的本地文件
+// IMEvent.filesExpired(ids)：过期或被删，SDK 已删掉地址和下载缓存，App 清掉自己按 fileId + variant 缓存的东西
+```
+
+- 状态：`processing` → `uploading` → `queued`（待发送：已 complete）→ `sending` → `sent`，任何一步可以 `failed`。全局同时只传一个，按选择顺序；文字可以越过。上传的时间不算 10 秒发送超时。
+- `error`：`.code(4292)` 额度用完、`.code(4290)` + `errorReason == "uploadPendingLimit"`（都不自动重试）、`.code(4139/4150/4096/5032)`，或 `.network`、`.process`（"无法处理这张图片，请用文件方式发送"）、`.storage`（"存储空间不足"）、`.sourceMissing`（"原文件已不可用，请重新选择"）、`.interrupted`（冷启动时还在处理或上传）、`.timeout`、`.kicked`。`complete` 的 5032 退避 1、2、4 秒重试 3 次；`send` 返回 4096 时有沙盒副本的回到上传中重新上传，不占自动重发次数。
+- 沙盒副本：发出后删除，失败保留供手动重发，退出登录、被踢时整目录删除。没发出的图片和文件记在本地库的 `outbox` 表（只有沙盒里的文件名，不存预签名地址），冷启动时处理中、上传中的转失败、不自动重传；已经 complete 的按"排队"规则自动发一次。没有引用的沙盒文件启动时删除。
+- 本地库版本 2：版本 1 原地升级（加 `outbox` 表），已有的会话和消息保留。会话记着已核对的 `modVer`，重连只重拉 `modVer` 变了的会话（服务端没有 `modVer` 时全部重拉）；`deleted`、`expired` 只能从假变真，过期的文件名清空。
+- 对象存储的 PUT、GET（`URLSessionObjectStoreTransport`）每次用新的会话，不复用连接：断在半路的 PUT 只到达 1 次（`URLSessionRetryTests` 用真实 socket 数过）。GET 会被 URLSession 自己重发，对下载无害（只读、同一个短期地址、2xx 才写文件）。不跟随重定向，不打日志。
+
 ## 本地库
 
-每个用户一个 SQLite 文件（文件名是 userId 的十六进制，避免大小写不敏感的文件系统把 alice 和 Alice 合并），保存会话、已确认的消息（每个会话最近 `maxCachedMessagesPerConversation` 条，默认 100）和社交状态。token 和未确认的消息不落盘。
+每个用户一个 SQLite 文件（文件名是 userId 的十六进制，避免大小写不敏感的文件系统把 alice 和 Alice 合并），保存会话、已确认的消息（每个会话最近 `maxCachedMessagesPerConversation` 条，默认 100）、社交状态和没发出的图片文件（`outbox`）。token、预签名地址和未确认的文本不落盘。
 
 被删除的原文要从磁盘文件里消失（AC-ADM-31-4），所以：
 
@@ -124,6 +153,8 @@ scripts/sync-protocol.sh                       # 从 tianting-server 检出同�
 ```
 
 账号的集成测试（`AccountIntegrationTests`）用 `IM_REGISTER_MODE=invite`、`IM_REFRESH_OVERLAP=61s`、`IM_TEST_DISABLE_AUTH_LOCK=1` 自己启动一个服务端，有一条要真的等一个 61 秒的窗口。
+
+文件的集成测试（`FileIntegrationTests`）另外启动 `Tests/IntegrationResources/fake_s3.py`（标准库 Python 3，只监听 127.0.0.1，不验签名，只验调度逻辑，和 sdk-ts 是同一个文件），服务端开 `IM_FILES_ENABLED=1`。
 
 推送的集成测试（`PushIntegrationTests`）自己用 `IM_PUSH_ENABLED=1` 启动一个服务端，开关关闭时的行为在 `PushDisabledIntegrationTests`。
 

@@ -197,6 +197,49 @@ final class URLSessionRetryTests: XCTestCase {
         XCTAssertEqual(srv.requests.count, 3, "URLSession's behavior changed: re-check the POST tests")
     }
 
+    // Problem S2 for the object store (FE-632): PUT and GET are idempotent, so URLSession may re-send them by itself.
+    // `URLSessionObjectStoreTransport` uses a new session per request: a broken PUT arrives exactly once (a failed upload
+    // is the SDK's to retry, from the start, F-FILE-01 rule 2). GETs are still re-sent by URLSession, see below.
+    func testObjectStorePutIsSentOnceGetResendIsRecorded() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("tt-put-\(UUID().uuidString)")
+        try Data(repeating: 1, count: 2048).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        for method in ["PUT", "GET"] {
+            for last: ScriptedSocketServer.Reply in [.close, .reset] {
+                let srv = try ScriptedSocketServer { i, _ in i == 0 ? .respond(okKeepAlive) : last }
+                defer { srv.stop() }
+                let t = URLSessionObjectStoreTransport()
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent("tt-get-\(UUID().uuidString)")
+                defer { try? FileManager.default.removeItem(at: dest) }
+                let url = srv.baseURL + "/chat/tmp/k?X-Amz-Signature=x"
+                if method == "PUT" {
+                    let first = try await t.put(url: url, headers: ["Content-Type": "image/jpeg"], file: file) { _ in }
+                    XCTAssertEqual(first, 200)
+                    do {
+                        _ = try await t.put(url: url, headers: ["Content-Type": "image/jpeg"], file: file) { _ in }
+                        XCTFail("expected a failure")
+                    } catch {}
+                } else {
+                    let first = try await t.get(url: url, to: dest) { _, _ in }
+                    XCTAssertEqual(first, 200)
+                    do {
+                        _ = try await t.get(url: url, to: dest) { _, _ in }
+                        XCTFail("expected a failure")
+                    } catch {}
+                }
+                try await waitForStragglers()
+                if method == "PUT" {
+                    XCTAssertEqual(srv.requests.filter { $0.hasPrefix(method) }.count, 2, "\(method) \(srv.requests)")
+                } else {
+                    // Measured (macOS, loopback, HTTP/1.1): even on a fresh connection URLSession re-sends a GET that
+                    // got no response (4 request lines for the 2 GETs). Harmless for a download: read-only, the same
+                    // short-lived presigned URL, and the SDK writes the file only after a 2xx. Recorded, not prevented.
+                    XCTAssertGreaterThanOrEqual(srv.requests.filter { $0.hasPrefix(method) }.count, 2, "\(srv.requests)")
+                }
+            }
+        }
+    }
+
     func testRefreshThatTimesOutIsSentOnce() async throws {
         let srv = try ScriptedSocketServer { _, _ in .silent }
         defer { srv.stop() }

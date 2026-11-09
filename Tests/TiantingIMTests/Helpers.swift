@@ -37,9 +37,24 @@ final class LogBox: IMLogger, @unchecked Sendable {
     }
 }
 
+/// A `FileAuth` whose target is set after construction (the account client is made after the IMClient).
+@MainActor
+final class LazyFileAuth: FileAuth {
+    var target: FileAuth?
+    func authorized(_ method: HttpMethod, _ path: String, body: JSONValue?) async throws -> JSONValue {
+        guard let target else { throw AccountNetworkError.network }
+        return try await target.authorized(method, path, body: body)
+    }
+}
+
 @MainActor
 final class Harness {
     let im: IMClient
+    let objectStore = FakeObjectStore()
+    let fileAuth = LazyFileAuth()
+    let files: FileClient
+    /// This harness's own folder for the attachment sandbox and the download cache.
+    let scratch: URL
     let clock: FakeClock
     let transport: FakeTransport
     let logs = LogBox()
@@ -52,8 +67,11 @@ final class Harness {
         platform: Platform = .ios,
         directory: URL? = nil,
         maxCached: Int = 100,
-        heartbeatMs: Int64? = nil
+        heartbeatMs: Int64? = nil,
+        scratch: URL? = nil
     ) {
+        self.scratch =
+            scratch ?? FileManager.default.temporaryDirectory.appendingPathComponent("tt-sdk-test-\(UUID().uuidString)")
         let clock = clock ?? FakeClock()
         self.clock = clock
         let transport = FakeTransport()
@@ -68,6 +86,10 @@ final class Harness {
         opts.maxCachedMessagesPerConversation = maxCached
         opts.logger = logs
         opts.pushCursorStore = nil
+        files = FileClient(auth: fileAuth, objectStore: objectStore, clock: clock, logger: logs, random: { 0.5 })
+        opts.files = files
+        opts.attachmentDirectory = self.scratch.appendingPathComponent("attachments")
+        opts.fileCacheDirectory = self.scratch.appendingPathComponent("cache")
         if let heartbeatMs { opts.timings.heartbeatMs = heartbeatMs }
         var n = 0
         opts.newId = {
@@ -117,7 +139,8 @@ func conv(
     memberCount: Int64? = nil,
     myRole: String? = nil,
     mutedUntil: JSONValue? = nil,
-    allMuted: Bool = false
+    allMuted: Bool = false,
+    modVer: Int64? = nil
 ) -> JSONValue {
     var o: [String: JSONValue] = [
         "convId": .string(convId),
@@ -134,6 +157,7 @@ func conv(
     if let myRole { o["myRole"] = .string(myRole) }
     if let mutedUntil { o["mutedUntil"] = mutedUntil }
     if allMuted { o["allMuted"] = true }
+    if let modVer { o["modVer"] = .int(modVer) }
     return .object(o)
 }
 
@@ -188,11 +212,11 @@ class IMTestCase: XCTestCase {
 
     func setup(
         clock: FakeClock? = nil, random: Double = 0.5, platform: Platform = .ios, directory: URL? = nil,
-        maxCached: Int = 100, heartbeatMs: Int64? = nil
+        maxCached: Int = 100, heartbeatMs: Int64? = nil, scratch: URL? = nil
     ) -> Harness {
         let h = Harness(
             clock: clock, random: random, platform: platform, directory: directory, maxCached: maxCached,
-            heartbeatMs: heartbeatMs)
+            heartbeatMs: heartbeatMs, scratch: scratch)
         harnesses.append(h)
         return h
     }
@@ -207,6 +231,7 @@ class IMTestCase: XCTestCase {
                 }
             }
         }
+        for h in harnesses { try? FileManager.default.removeItem(at: h.scratch) }
         harnesses = []
         try await super.tearDown()
     }

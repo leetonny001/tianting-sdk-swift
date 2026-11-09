@@ -1072,13 +1072,54 @@ final class AccountHttp4011Tests: AccountTestCase {
         XCTAssertEqual(h.http.to(REFRESH).count, 1)
     }
 
-    func testTC_ACC_03_45_kickedAtAbsoluteLimitStillRefreshes() async {
+    // P-35 L1 (Frank 2026-11-09): a tokenExpired kick for a token that ends at the absolute limit no longer refreshes.
+    // This replaces the C1 case that asserted one more refresh here (the decision changed the expected behavior).
+    func testTC_ACC_03_45_L1_kickedAtAbsoluteLimitEndsWithoutRefresh() async {
         let h = setupAccount()
+        let w = Watch(h)
         await capped(h)
         let c = await h.online()
+        h.clock.advance(5 * HOUR - 400)  // JWT exp is whole seconds: the server kicks under a second early.
+        c.receive(["cmd": "event", "data": ["type": "kicked", "reason": "tokenExpired"]])
         c.drop(4011)
         await settle()
-        XCTAssertEqual(h.http.to(REFRESH).count, 2)
+        XCTAssertEqual(w.ended.first?.action, .login)
+        XCTAssertEqual(w.ended.first?.dialog, .sessionExpired)
+        XCTAssertEqual(w.ended.first?.reason, "expired")
+        guard case .session(let e)? = w.fatal.first else { return XCTFail("fatal") }
+        XCTAssertEqual(e.dialog, .sessionExpired)
+        XCTAssertNil(h.account.session)
+        h.clock.advance(120_000)
+        await settle()
+        XCTAssertEqual(h.http.to(REFRESH).count, 1)  // only the one in `capped`
+        XCTAssertEqual(h.transport.connections.count, 1)
+    }
+
+    func testTC_ACC_03_45_L1_closeCode4011AloneEndsWithoutRefresh() async {
+        let h = setupAccount()
+        let w = Watch(h)
+        await capped(h)
+        let c = await h.online()
+        h.clock.advance(5 * HOUR - 400)
+        c.drop(4011)
+        await settle()
+        XCTAssertEqual(w.ended.first?.dialog, .sessionExpired)
+        h.clock.advance(120_000)
+        await settle()
+        XCTAssertEqual(h.http.to(REFRESH).count, 1)
+        XCTAssertEqual(h.transport.connections.count, 1)
+    }
+
+    func testTC_ACC_03_45_L1_ordinaryTokenKickStillRefreshesOnce() async {
+        let h = setupAccount()
+        let w = Watch(h)
+        h.session(1, DAY)
+        let c = await h.online()
+        c.receive(["cmd": "event", "data": ["type": "kicked", "reason": "tokenExpired"]])
+        c.drop(4011)
+        await settle()
+        XCTAssertEqual(h.http.to(REFRESH).count, 1)
+        XCTAssertEqual(w.ended, [])
     }
 
     // A local clock running 20 hours fast, or a short TTL: the refreshed token already looks under 6 hours. One refresh,
@@ -1908,6 +1949,11 @@ final class AccountOtherTests: AccountTestCase {
             Task { _ = try await a.regenerateRecoveryCode(password: "Password-1") },
             Task { try await a.ackRecoveryCode(gen: 2) },
             Task { try await a.cancelDelete(username: USER, password: "Password-1") },
+            // The file endpoints (FE-632, F-FILE-01, 04) go through AccountClient.authorized with a Bearer.
+            Task { _ = try await h.files.createUpload(UploadRequest(kind: "image", name: "a.jpg", size: 10, mime: "image/jpeg", thumbSize: 5, thumbMime: "image/jpeg")) },
+            Task { _ = try await h.files.complete("F1") },
+            Task { await h.files.cancelUpload("F1") },
+            Task { _ = try await h.files.getFileUrls([FileUrlItem(fileId: "F1", variant: .thumb)]) },
         ]
         await settle()
         for c in h.http.calls { c.respond(200, ["recoveryCode": "C", "recoveryCodeGen": 2, "events": [], "otherSessions": ["count": 0]]) }
@@ -1933,7 +1979,7 @@ final class AccountOtherTests: AccountTestCase {
         h.http.pending[0].respond(200)
         _ = await out.value
         await settle()
-        var seen = Set(h.http.calls.map { "\($0.request.method.rawValue) \($0.path)" })
+        var seen = Set(h.http.calls.map { endpointKey($0.request.method.rawValue, $0.path) ?? "\($0.request.method.rawValue) \($0.path)" })
         seen.insert("POST \(REFRESH)")  // The other tests send it.
         guard case .object(let endpoints)? = try loadJSON("schema/http-client.schema.json")["endpoints"] else {
             return XCTFail("endpoints")

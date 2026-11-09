@@ -39,6 +39,7 @@ public enum ErrorCode {
     public static let friendRequestHandled = 4091
     public static let pushIdConflict = 4094
     public static let usernameTaken = 4095
+    public static let fileNotReady = 4096
     public static let groupMemberLimitExceeded = 4130
     public static let batchLimitExceeded = 4131
     public static let friendLimitExceeded = 4132
@@ -47,11 +48,14 @@ public enum ErrorCode {
     public static let joinedGroupLimitExceeded = 4135
     public static let groupAdminLimitExceeded = 4136
     public static let strangerMsgLimit = 4137
+    public static let fileTooLarge = 4139
+    public static let fileTypeNotAllowed = 4150
     public static let rateLimited = 4290
     public static let quotaExceeded = 4292
     public static let accountLoginLocked = 4294
     public static let `internal` = 5000
     public static let serviceUnavailable = 5030
+    public static let objectStoreUnavailable = 5032
 }
 
 struct ErrorInfo: Sendable {
@@ -98,6 +102,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4091: ErrorInfo(name: "FRIEND_REQUEST_HANDLED", retryable: false, message: "申请已同意"),
     4094: ErrorInfo(name: "PUSH_ID_CONFLICT", retryable: false, message: "同一 pushId 的调用方或内容不同"),
     4095: ErrorInfo(name: "USERNAME_TAKEN", retryable: false, message: "用户名已存在或保留"),
+    4096: ErrorInfo(name: "FILE_NOT_READY", retryable: false, message: "文件未完成上传，或已绑定其他消息"),
     4130: ErrorInfo(name: "GROUP_MEMBER_LIMIT_EXCEEDED", retryable: false, message: "群成员已达上限"),
     4131: ErrorInfo(name: "BATCH_LIMIT_EXCEEDED", retryable: false, message: "单次批量操作数量超限"),
     4132: ErrorInfo(name: "FRIEND_LIMIT_EXCEEDED", retryable: false, message: "好友数量已达上限"),
@@ -106,11 +111,14 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4135: ErrorInfo(name: "JOINED_GROUP_LIMIT_EXCEEDED", retryable: false, message: "加入的群聊已达上限"),
     4136: ErrorInfo(name: "GROUP_ADMIN_LIMIT_EXCEEDED", retryable: false, message: "管理员已满 10 人"),
     4137: ErrorInfo(name: "STRANGER_MSG_LIMIT", retryable: false, message: "对方回复前的条数已用完"),
+    4139: ErrorInfo(name: "FILE_TOO_LARGE", retryable: false, message: "超过大小限制（details.maxBytes）"),
+    4150: ErrorInfo(name: "FILE_TYPE_NOT_ALLOWED", retryable: false, message: "禁止的类型或内容与声明不符"),
     4290: ErrorInfo(name: "RATE_LIMITED", retryable: true, message: "操作过于频繁"),
     4292: ErrorInfo(name: "QUOTA_EXCEEDED", retryable: false, message: "今天的次数已用完"),
     4294: ErrorInfo(name: "ACCOUNT_LOGIN_LOCKED", retryable: false, message: "尝试过多，暂时锁定（details.retryAfterSeconds）"),
     5000: ErrorInfo(name: "INTERNAL", retryable: true, message: "服务器内部错误"),
     5030: ErrorInfo(name: "SERVICE_UNAVAILABLE", retryable: true, message: "服务暂不可用"),
+    5032: ErrorInfo(name: "OBJECT_STORE_UNAVAILABLE", retryable: true, message: "对象存储暂不可用（reason: completeInProgress 是同一上传的 complete 正在进行）"),
 ]
 
 /// Codes the account and file HTTP endpoints return (`client` scope, PRD-chat 11.5, F-SYS-01).
@@ -126,20 +134,26 @@ public let clientErrorCodes: [Int] = [
     4030,
     4034,
     4095,
+    4096,
+    4131,
+    4139,
+    4150,
     4290,
     4292,
     4294,
     5000,
     5030,
+    5032,
 ]
 
 /// Error code -> the reasons that refine it (PRD-chat 11.5). A reason not listed here must not raise an error.
 public let errorReasons: [Int: [String]] = [
-    4000: ["passwordWeak", "recoveryCodeStale"],
+    4000: ["passwordWeak", "recoveryCodeStale", "fileKindMismatch", "uploadMismatch", "fileNameTooLong"],
     4011: ["tokenSuperseded"],
     4019: ["invalid", "expired", "revoked", "superseded", "replayDetected", "credentialsChanged", "loggedOutOthers", "accountDeleted"],
     4030: ["registerClosed", "inviteInvalid", "accountSessionRequired", "accountExists", "accountDeletionPending", "featureDisabled"],
-    4290: ["recoverLimited"],
+    4290: ["recoverLimited", "uploadPendingLimit"],
+    5032: ["completeInProgress"],
 ]
 
 /// WebSocket close codes.

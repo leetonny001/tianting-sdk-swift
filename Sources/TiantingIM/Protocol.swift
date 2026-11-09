@@ -16,6 +16,9 @@ public struct MessageType: OpenEnum {
     public static let text: MessageType = "text"
     public static let custom: MessageType = "custom"
     public static let tip: MessageType = "tip"
+    /// C2 (PRD-chat F-FILE-02, 03).
+    public static let image: MessageType = "image"
+    public static let file: MessageType = "file"
 }
 
 public struct GroupRole: OpenEnum {
@@ -62,23 +65,78 @@ public struct TipBody: Sendable, Hashable, Codable {
     }
 }
 
+/// An image message (PRD-chat F-FILE-02). Downstream size, mime and dimensions are the server's recorded values;
+/// `expired == true` means the object is gone and no URL is issued. A local message not uploaded yet has an empty fileId.
+public struct ImageBody: Sendable, Hashable, Codable {
+    public var fileId: String
+    public var width: Int?
+    public var height: Int?
+    public var size: Int64?
+    public var mime: String?
+    public var expired: Bool?
+
+    public init(
+        fileId: String, width: Int? = nil, height: Int? = nil, size: Int64? = nil, mime: String? = nil, expired: Bool? = nil
+    ) {
+        self.fileId = fileId
+        self.width = width
+        self.height = height
+        self.size = size
+        self.mime = mime
+        self.expired = expired
+    }
+}
+
+/// A file message (F-FILE-03). `name` is the cleaned file name, empty after expiry (F-FILE-06 rule 3). Never logged.
+public struct FileBody: Sendable, Hashable, Codable {
+    public var fileId: String
+    public var name: String?
+    public var size: Int64?
+    public var mime: String?
+    public var expired: Bool?
+
+    public init(fileId: String, name: String? = nil, size: Int64? = nil, mime: String? = nil, expired: Bool? = nil) {
+        self.fileId = fileId
+        self.name = name
+        self.size = size
+        self.mime = mime
+        self.expired = expired
+    }
+}
+
 public struct MsgBody: Sendable, Hashable, Codable {
     public var text: String?
     public var data: JSONValue?
     public var tip: TipBody?
+    public var image: ImageBody?
+    public var file: FileBody?
 
-    public init(text: String? = nil, data: JSONValue? = nil, tip: TipBody? = nil) {
+    public init(text: String? = nil, data: JSONValue? = nil, tip: TipBody? = nil, image: ImageBody? = nil, file: FileBody? = nil) {
         self.text = text
         self.data = data
         self.tip = tip
+        self.image = image
+        self.file = file
     }
 
-    public var isEmpty: Bool { text == nil && data == nil && tip == nil }
+    public var isEmpty: Bool { text == nil && data == nil && tip == nil && image == nil && file == nil }
 
+    /// The image's or file's id; nil for other messages and for attachments not uploaded yet.
+    public var fileId: String? {
+        let id = image?.fileId ?? file?.fileId
+        return id?.isEmpty == false ? id : nil
+    }
+
+    /// Whether the image or file expired (F-FILE-06 rule 3).
+    public var fileExpired: Bool { image?.expired == true || file?.expired == true }
+
+    /// What goes up in `send`: attachments carry only the fileId; the server fills in the rest (F-FILE-02 rule 1).
     var json: JSONValue {
         var o: [String: JSONValue] = [:]
         if let text { o["text"] = .string(text) }
         if let data { o["data"] = data }
+        if let image { o["image"] = ["fileId": .string(image.fileId)] }
+        if let file { o["file"] = ["fileId": .string(file.fileId)] }
         return .object(o)
     }
 }
@@ -134,9 +192,13 @@ struct ServerConversation: Sendable, Decodable {
     var mutedUntil: Until?
     /// Only present while the group has a group-wide mute (P1, F-ADM-42); owners and admins get it too but are not restricted.
     var allMuted: Bool
+    /// The version of how existing messages look (C2: file expiry); a change re-syncs this conversation (F-RCL-03
+    /// rule 2). Older servers do not send it.
+    var modVer: Int64?
 
     private enum CodingKeys: String, CodingKey {
-        case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil, allMuted
+        case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil, allMuted,
+            modVer
     }
 
     init(from decoder: Decoder) throws {
@@ -154,6 +216,7 @@ struct ServerConversation: Sendable, Decodable {
         myRole = try c.decodeIfPresent(GroupRole.self, forKey: .myRole)
         mutedUntil = try c.decodeUntil(forKey: .mutedUntil)
         allMuted = c.value(.allMuted, default: false)
+        modVer = try? c.decodeIfPresent(Int64.self, forKey: .modVer)
     }
 }
 

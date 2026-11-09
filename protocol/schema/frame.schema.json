@@ -47,13 +47,15 @@
       "enum": [
         "text",
         "custom",
-        "tip"
+        "tip",
+        "image",
+        "file"
       ],
-      "description": "tip 由服务端生成，客户端不能发送"
+      "description": "tip 由服务端生成，客户端不能发送；image、file 从 C2 起（PRD-chat F-FILE-02、03）"
     },
     "MsgBody": {
       "type": "object",
-      "description": "text: {text}；custom: {data}，data 为业务自定义 JSON；tip: {tip}（只由服务端生成）",
+      "description": "text: {text}；custom: {data}，data 为业务自定义 JSON；tip: {tip}（只由服务端生成）；image: {image}；file: {file}。按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效），见 BodyByType",
       "properties": {
         "text": {
           "type": "string",
@@ -63,6 +65,12 @@
         "data": {},
         "tip": {
           "$ref": "#/$defs/TipBody"
+        },
+        "image": {
+          "$ref": "#/$defs/ImageBody"
+        },
+        "file": {
+          "$ref": "#/$defs/FileBody"
         }
       },
       "minProperties": 1
@@ -270,7 +278,12 @@
               "$ref": "#/$defs/MsgBody"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "$ref": "#/$defs/BodyByType"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1621,6 +1634,9 @@
               "body"
             ]
           }
+        },
+        {
+          "$ref": "#/$defs/BodyByType"
         }
       ]
     },
@@ -1784,6 +1800,11 @@
         "allMuted": {
           "type": "boolean",
           "description": "该群开启了全群禁言时才出现（P1，F-ADM-42），值为 true；所有成员都带，群主、管理员不受限，结合 myRole 判断；单聊不带"
+        },
+        "modVer": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "会话内已有消息的展示内容变化的版本号（C2：文件过期），变化时客户端重拉这个会话（PRD-chat F-RCL-03 规则 2、2a）。老服务端没有这个字段"
         }
       },
       "additionalProperties": false
@@ -2732,6 +2753,205 @@
         }
       },
       "additionalProperties": false
+    },
+    "ImageBody": {
+      "type": "object",
+      "description": "上行只用 fileId，其他字段不报错、被忽略，所以这里不写 additionalProperties:false（AC-FILE-02-2、02-11）；下行是服务端记录的真实值。expired=true 时对象已删除，不再发放地址",
+      "required": [
+        "fileId"
+      ],
+      "properties": {
+        "fileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mime": {
+          "type": "string"
+        },
+        "expired": {
+          "type": "boolean"
+        }
+      }
+    },
+    "FileBody": {
+      "type": "object",
+      "description": "上行只用 fileId（同 ImageBody）；下行 name 是清洗后的文件名，过期后为空字符串（PRD-chat F-FILE-06 规则 3）",
+      "required": [
+        "fileId"
+      ],
+      "properties": {
+        "fileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mime": {
+          "type": "string"
+        },
+        "expired": {
+          "type": "boolean"
+        }
+      }
+    },
+    "BodyByType": {
+      "description": "MsgBody 按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效，不受开关影响）：text 只能带 text（quote、mentions 的结构随 C4 加），custom 只能带 data，image 只能带 image，file 只能带 file，tip 只能带 tip。用在 send 的 data 和 Message 上",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "text"
+              }
+            },
+            "required": [
+              "type",
+              "body"
+            ]
+          },
+          "then": {
+            "properties": {
+              "body": {
+                "required": [
+                  "text"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "text"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "custom"
+              }
+            },
+            "required": [
+              "type",
+              "body"
+            ]
+          },
+          "then": {
+            "properties": {
+              "body": {
+                "required": [
+                  "data"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "tip"
+              }
+            },
+            "required": [
+              "type",
+              "body"
+            ]
+          },
+          "then": {
+            "properties": {
+              "body": {
+                "required": [
+                  "tip"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "tip"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "image"
+              }
+            },
+            "required": [
+              "type",
+              "body"
+            ]
+          },
+          "then": {
+            "properties": {
+              "body": {
+                "required": [
+                  "image"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "image"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "type",
+              "body"
+            ]
+          },
+          "then": {
+            "properties": {
+              "body": {
+                "required": [
+                  "file"
+                ],
+                "propertyNames": {
+                  "enum": [
+                    "file"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -68,6 +68,8 @@ final class AccountHarness {
     var unregistered = 0
 
     var im: IMClient { base.im }
+    var files: FileClient { base.files }
+    var objectStore: FakeObjectStore { base.objectStore }
     var clock: FakeClock { base.clock }
     var transport: FakeTransport { base.transport }
     var logs: LogBox { base.logs }
@@ -80,6 +82,7 @@ final class AccountHarness {
         placeholder.systemEvents = false
         account = AccountClient(options: placeholder)
         account = newClient()
+        base.fileAuth.target = account
         http.onRequest = { [unowned self] call in
             self.peak = max(self.peak, self.http.pending.count)
             self.check(call)
@@ -101,7 +104,8 @@ final class AccountHarness {
 
     private func check(_ call: FakeHttpCall) {
         guard let schema = try? loadJSON("schema/http-client.schema.json"),
-            let ep = schema["endpoints"]?["\(call.request.method.rawValue) \(call.path)"]
+            let key = endpointKey(call.request.method.rawValue, call.path),
+            let ep = schema["endpoints"]?[key]
         else {
             badRequests.append("no endpoint \(call.request.method.rawValue) \(call.path)")
             return
@@ -141,6 +145,20 @@ final class AccountHarness {
             refreshToken: refreshToken(sid, gen), refreshExpiresAt: clock.now() + DAY,
             absoluteExpiresAt: clock.now() + 365 * DAY)
     }
+}
+
+/// The `endpoints` key for a request: path parameters like `{fileId}` match the FileId characters.
+func endpointKey(_ method: String, _ path: String) -> String? {
+    guard case .object(let eps)? = (try? loadJSON("schema/http-client.schema.json"))?["endpoints"] else { return nil }
+    if eps["\(method) \(path)"] != nil { return "\(method) \(path)" }
+    for k in eps.keys {
+        let marked = k.replacingOccurrences(of: "\\{[^}]+\\}", with: "PARAM", options: .regularExpression)
+        let pattern =
+            "^" + NSRegularExpression.escapedPattern(for: marked).replacingOccurrences(of: "PARAM", with: "[A-Za-z0-9_-]{1,64}")
+            + "$"
+        if "\(method) \(path)".range(of: pattern, options: .regularExpression) != nil { return k }
+    }
+    return nil
 }
 
 @MainActor
