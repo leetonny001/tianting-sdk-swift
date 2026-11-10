@@ -9,6 +9,9 @@ import XCTest
 // C4 (FE-663, FE-664): TC-CHAT-90-33 and the same-named cases of TC-RCL-03-11, TC-RCL-03-13, TC-QUO-02-02, TC-QUO-02-06,
 // TC-MEN-03-07 run here too: steps `event`, `advance`, expectations `convsFetches`, `mentionUnread`. Every case runs twice,
 // in memory and with a real SQLite file (whose raw bytes are searched for the markers at the end), as sdk-kotlin does.
+// C5 (FE-682): TC-CHAT-90-39, the six cases of BE-487 (pin order, `deleted`, purge, total unread): `connect` also carries
+// truncated / deleted / deletedTruncated, expectations `conversations`, `convState`, `removed`, `totalUnread`; the marker
+// ZXQ-CVS-1 of purged messages must be gone from memory and the database.
 // The real IMClient + FakeTransport + fake clock: `connect` is the real convs answer after a (re)connect, and every `sync`
 // the SDK sends is answered by convId. Local results, CI not running.
 
@@ -100,12 +103,17 @@ private func wire(_ convId: String, _ m: JSONValue) -> JSONValue {
 /// the feature is off or the server is older.
 private func wireConv(_ c: JSONValue) -> JSONValue {
     let maxSeq = c["maxSeq"]!.intValue!
-    guard case .object(var o) = conv(c["convId"]!.stringValue!, maxSeq: maxSeq, readSeq: maxSeq, modVer: c["modVer"]?.intValue)
+    guard
+        case .object(var o) = conv(
+            c["convId"]!.stringValue!, maxSeq: maxSeq, readSeq: maxSeq - (c["unread"]?.intValue ?? 0), minSeq: c["minSeq"]?.intValue ?? 1,
+            unread: c["unread"]?.intValue ?? 0, updatedAt: c["updatedAt"]?.intValue ?? 0, modVer: c["modVer"]?.intValue)
     else { return nil }
     if let mu = c["mentionUnread"]?.intValue {
         o["mentionUnread"] = .int(mu)
         if mu > 0 { o["firstMentionSeq"] = .int(maxSeq) }
     }
+    // C5. readSeq = maxSeq - unread as the server computes it (the format text still says readSeq = maxSeq; sdk-ts does the same).
+    for k in ["pinned", "pinnedAt", "notifyOff"] { if let v = c[k] { o[k] = v } }
     return .object(o)
 }
 
@@ -121,7 +129,6 @@ private final class ChatSyncRunner {
     private var answered: Set<String> = []
     /// convs frames the SDK sent during the last `event` or `advance`.
     var fetches = 0
-
     init(_ h: Harness, me: String) {
         self.h = h
         self.me = me
@@ -186,9 +193,19 @@ private final class ChatSyncRunner {
                 h.clock.advance(1_000)  // The first backoff, then the reconnect.
                 await settle()
             }
-            c = await h.login(me, convs: (st["convs"]?.arrayValue ?? []).map(wireConv))
-            if let prev, prev === c { throw VectorError(description: "a reconnect should be a new connection") }
-            for f in c!.frames("convs") { answered.insert(f.id ?? "") }  // login answered this connection's convs.
+            let n = h.transport.current
+            if let prev, prev === n { throw VectorError(description: "a reconnect should be a new connection") }
+            c = n
+            n.open()
+            n.ack("auth", ["userId": .string(me), "serverTime": .int(h.clock.now())])
+            await flush()
+            var data: [String: JSONValue] = [
+                "convs": .array((st["convs"]?.arrayValue ?? []).map(wireConv)), "truncated": st["truncated"] ?? false,
+            ]
+            if let d = st["deleted"] { data["deleted"] = d }  // C5
+            if let t = st["deletedTruncated"] { data["deletedTruncated"] = t }
+            n.ack("convs", .object(data))
+            for f in n.frames("convs") { answered.insert(f.id ?? "") }  // This connection's convs is answered.
             await settle()
             return try await drain { id in
                 if let code = st["errors"]?[id]?.intValue {
@@ -237,11 +254,23 @@ private let tcOfAc = [
 ]
 
 private func tcOf(_ acs: [String]) -> String {
+    if acs.contains(where: { $0.hasPrefix("AC-CVS-") }) { return (["TC-CHAT-90-39"] + acs).joined(separator: " ") }
     let c4 = acs.contains { $0.hasPrefix("AC-QUO-") || $0.hasPrefix("AC-MEN-") || $0 == "AC-RCL-03-13" }
     return ([c4 ? "TC-CHAT-90-33" : "TC-CHAT-90-13"] + acs.map { tcOfAc[$0] ?? $0 }).joined(separator: " ")
 }
 
-private let marks = ["ZXQ-FILE-NAME", "ZXQ-RCL-2", "ZXQ-QUO-1"]
+private let marks = ["ZXQ-FILE-NAME", "ZXQ-RCL-2", "ZXQ-QUO-1", "ZXQ-CVS-1"]
+
+/// convState of a listed conversation, written as the cases write it (pinned, pinnedAt, notifyOff only when set).
+private func convState(_ v: Conversation) -> JSONValue {
+    var o: [String: JSONValue] = ["minSeq": .int(v.minSeq), "unread": .int(v.unread)]
+    if v.isPinned {
+        o["pinned"] = true
+        if let at = v.pinnedAt { o["pinnedAt"] = .int(at) }
+    }
+    if v.isNotifyOff { o["notifyOff"] = true }
+    return .object(o)
+}
 
 @MainActor
 final class ChatSyncVectorTests: IMTestCase {
@@ -265,24 +294,41 @@ final class ChatSyncVectorTests: IMTestCase {
     }
 
     func testTC_CHAT_90_33_c4CasesArePresent() throws {
-        let cases = try cases
+        let cases = try cases.filter { c in !c["acs"]!.arrayValue!.contains { $0.stringValue!.hasPrefix("AC-CVS-") } }
         let acs = Set(cases.flatMap { $0["acs"]!.arrayValue!.map { $0.stringValue! } })
         for ac in ["AC-RCL-03-13", "AC-QUO-02-2", "AC-QUO-02-6", "AC-MEN-03-7"] { XCTAssertTrue(acs.contains(ac), ac) }
         let withEvents = cases.filter { c in
             c["steps"]!.arrayValue!.contains { ["event", "advance"].contains($0["op"]!.stringValue!) }
         }
         XCTAssertEqual(withEvents.count, 4)
-        XCTAssertEqual(cases.count, 13)  // C2's 7 + C4's 6
+        XCTAssertEqual(cases.count, 13)  // C2's 7 + C4's 6 (C5's 6 left out here)
         let ops = Set(cases.flatMap { $0["steps"]!.arrayValue!.map { $0["op"]!.stringValue! } })
         XCTAssertEqual(ops, ["connect", "disconnect", "load", "event", "advance"])
+    }
+
+    func testTC_CHAT_90_39_c5CasesArePresent() throws {
+        let c5 = try cases.filter { c in c["acs"]!.arrayValue!.contains { $0.stringValue!.hasPrefix("AC-CVS-") } }
+        XCTAssertEqual(c5.count, 6)
+        let acs = Set(c5.flatMap { $0["acs"]!.arrayValue!.map { $0.stringValue! } })
+        for ac in ["AC-CVS-01-1", "AC-CVS-02-2", "AC-CVS-02-5", "AC-CVS-03-2", "AC-CVS-03-5", "AC-CVS-03-10", "AC-CVS-04-1", "AC-CVS-04-2", "AC-CVS-04-5"] {
+            XCTAssertTrue(acs.contains(ac), ac)
+        }
+        let keys = Set(c5.flatMap { $0["steps"]!.arrayValue!.flatMap { $0["expect"]?.keys ?? [] } })
+        XCTAssertTrue(keys.isSuperset(of: ["conversations", "convState", "removed", "totalUnread"]), "\(keys)")
     }
 
     /// One case; `dir` set runs it on a real SQLite file. Returns failures as text, so all cases run.
     private func run(_ c: JSONValue, me: String, dir: URL?) async -> [String] {
         var problems: [String] = []
         let h = setup(directory: dir, heartbeatMs: 10 * 365 * DAY)
-        let r = ChatSyncRunner(h, me: me)
         let steps = c["steps"]!.arrayValue!
+        let r = ChatSyncRunner(h, me: me)
+        // Every conversation the case names, to look for removed snapshots.
+        var seen = Set<String>()
+        for st in steps {
+            for v in (st["convs"]?.arrayValue ?? []) + (st["deleted"]?.arrayValue ?? []) { seen.insert(v["convId"]!.stringValue!) }
+            if let id = st["convId"]?.stringValue { seen.insert(id) }
+        }
         for (i, st) in steps.enumerated() {
             let op = st["op"]!.stringValue!
             let at = "step \(i) \(op)"
@@ -316,6 +362,23 @@ final class ChatSyncVectorTests: IMTestCase {
             if let n = want["convsFetches"]?.intValue, Int64(r.fetches) != n {
                 problems.append("\(at): convsFetches \(r.fetches) != \(n)")
             }
+            // C5: the list order, each listed conversation's state, the inferred removals, the total unread.
+            if let w = want["conversations"] {
+                let got = strs(h.im.conversations().map(\.convId))
+                if got != w { problems.append("\(at): conversations \(got.jsonString()) != \(w.jsonString())") }
+            }
+            if let w = want["convState"] {
+                var got: [String: JSONValue] = [:]
+                for v in h.im.conversations() { got[v.convId] = convState(v) }
+                if JSONValue.object(got) != w { problems.append("\(at): convState \(JSONValue.object(got).jsonString()) != \(w.jsonString())") }
+            }
+            if let w = want["removed"] {
+                let got = seen.filter { h.im.conversationSnapshot($0)?.removed == true }.sorted()
+                if strs(got) != w { problems.append("\(at): removed \(got) != \(w.jsonString())") }
+            }
+            if let w = want["totalUnread"]?.intValue, h.im.totalUnread() != w {
+                problems.append("\(at): totalUnread \(h.im.totalUnread()) != \(w)")
+            }
             if case .object(let mu)? = want["mentionUnread"] {
                 var got: [String: JSONValue] = [:]
                 for v in h.im.conversations() { if let n = v.mentionUnread { got[v.convId] = .int(n) } }
@@ -339,7 +402,7 @@ final class ChatSyncVectorTests: IMTestCase {
         return problems
     }
 
-    /// F-RCL-03 rules 2, 2a (monotonic merge, modVer re-sync), F-QUO-02 rule 4, F-MEN-03 rule 1: all 13 cases, in memory
+    /// F-RCL-03 rules 2, 2a (monotonic merge, modVer re-sync), F-QUO-02 rule 4, F-MEN-03 rule 1, C5 F-CVS-01..04: all 19 cases, in memory
     /// and on SQLite.
     func testChatSyncVectors() async throws {
         let spec = try loadJSON("vectors/chat-sync.json")
@@ -360,7 +423,7 @@ final class ChatSyncVectorTests: IMTestCase {
                 ran += 1
             }
         }
-        XCTAssertEqual(ran, 26)
+        XCTAssertEqual(ran, 38)  // C2 7 + C4 6 + C5 6, twice
         print("chat-sync.json: \(ran / 2) cases x (memory, SQLite)")
     }
 }

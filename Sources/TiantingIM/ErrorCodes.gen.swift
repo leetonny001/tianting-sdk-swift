@@ -51,6 +51,7 @@ public enum ErrorCode {
     public static let strangerMsgLimit = 4137
     public static let fileTooLarge = 4139
     public static let fileTypeNotAllowed = 4150
+    public static let pinLimitExceeded = 4220
     public static let rateLimited = 4290
     public static let quotaExceeded = 4292
     public static let mentionAllLimited = 4293
@@ -116,6 +117,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4137: ErrorInfo(name: "STRANGER_MSG_LIMIT", retryable: false, message: "对方回复前的条数已用完"),
     4139: ErrorInfo(name: "FILE_TOO_LARGE", retryable: false, message: "超过大小限制（details.maxBytes）"),
     4150: ErrorInfo(name: "FILE_TYPE_NOT_ALLOWED", retryable: false, message: "禁止的类型或内容与声明不符"),
+    4220: ErrorInfo(name: "PIN_LIMIT_EXCEEDED", retryable: false, message: "置顶数量已满"),
     4290: ErrorInfo(name: "RATE_LIMITED", retryable: true, message: "操作过于频繁"),
     4292: ErrorInfo(name: "QUOTA_EXCEEDED", retryable: false, message: "今天的次数已用完"),
     4293: ErrorInfo(name: "MENTION_ALL_LIMITED", retryable: false, message: "@ 所有人次数用完（details.retryAfterSeconds）"),

@@ -1,15 +1,15 @@
 {
-  "description": "消息同步共享用例（PRD-chat F-RCL-03 规则 2、2a，F-QUO-02 规则 4，F-MEN-03 规则 1；第 15 节表 C2 的\"合并和过期\"、C4 的\"撤回合并、引用清除、提及计数\"）。按顺序执行 steps，connect、load、event、advance 之后断言 expect。期望结果由服务端的 Go 参考客户端（server/e2e/chatmodel）生成，不要手改。",
-  "scope": "C2：单调合并里的 expired 和 modVer 重拉。C4：deleted、recalled 只能从假变真，quote.state 只能从 normal 往后走、quote.text 清除后不恢复，收到 msgDeleted 时清除引用它的原文，提及计数的节流刷新。置顶、删除会话、总未读随 C5 加到这份文件。三套 SDK 用假传输层跑真实的客户端（AC-CHAT-90-15）。",
+  "description": "消息同步共享用例（PRD-chat F-RCL-03 规则 2、2a，F-QUO-02 规则 4，F-MEN-03 规则 1，F-CVS-01～04；第 15 节表 C2 的\"合并和过期\"、C4 的\"撤回合并、引用清除、提及计数\"、C5 的\"置顶排序、deleted 判断、总未读\"）。按顺序执行 steps，connect、load、event、advance 之后断言 expect。期望结果由服务端的 Go 参考客户端（server/e2e/chatmodel）生成，不要手改。",
+  "scope": "C2：单调合并里的 expired 和 modVer 重拉。C4：deleted、recalled 只能从假变真，quote.state 只能从 normal 往后走、quote.text 清除后不恢复，收到 msgDeleted 时清除引用它的原文，提及计数的节流刷新。C5：置顶排序，convs 的 deleted 判断（不生成 removed 快照，truncated、deletedTruncated 时不推断），按 minSeq 物理清除本地（convs 和 convDeleted 两条路径，迟到的应答不写回，保留下来的消息里的引用摘要照常显示），convSettingsChanged、convDeleted 之后的状态，总未读。三套 SDK 用假传输层跑真实的客户端（AC-CHAT-90-15）。",
   "format": {
     "advance": "[SDK 钟] 推进 ms 毫秒（每个用例从 0 开始；connect、load、event 不推进时钟）。节流窗口里被推迟的刷新在窗口结束（上次刷新后 5000 毫秒）时发出，应答是这一步的 convs",
-    "connect": "（重）连接成功，convs 应答为 convs。之后 SDK 发出的每个 sync 都按 convId 回复：errors 里有的回这个错误码，否则回 replies 里的消息（没有就是空列表），hasMore=false，直到不再发 sync。maxSeq 等于已加载的最大 seq，所以只有重拉，没有补拉",
+    "connect": "（重）连接成功，convs 应答为 convs（C5：再带这一步的 truncated、deleted、deletedTruncated，不写是 false / 没有）。之后 SDK 发出的每个 sync 都按 convId 回复：errors 里有的回这个错误码，否则回 replies 里的消息（没有就是空列表），hasMore=false，直到不再发 sync。maxSeq 等于已加载的最大 seq，所以只有重拉，没有补拉",
     "disconnect": "连接断开（不是退出登录），之后按 SDK 的重连规则重连，由下一步 connect 完成",
-    "event": "服务端下发一个事件，event 是事件帧的 data（msgDeleted、readUpdated，字段和协议相同）。这一步里 SDK 如果为了提及计数重新拉 convs（F-MEN-03 规则 1：这个会话本地 mentionUnread > 0 时，节流每 5 秒最多一次），应答是这一步的 convs；这些 convs 只用来更新 mentionUnread，modVer 和上次相同，不会引起重拉",
-    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同；某个会话重拉失败只影响它自己，其余会话照拉（P-39 ②），所以集合和顺序无关）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）、file 的 name、text、quote（seq、state、text）、deleted、recalled、recalledBy（缺省为 false / 空）；deleted 的消息只比较 seq、type、deleted、recalled、recalledBy，原文、文件名、引用都必须已清除（内存和本地库搜不到特征串 ZXQ-RCL-2、ZXQ-QUO-1）。convsFetches：event、advance 这一步 SDK 发了几次 convs。mentionUnread：本地记的 mentionUnread（只有 convs 带过这个字段的会话）",
+    "event": "服务端下发一个事件，event 是事件帧的 data（msgDeleted、readUpdated，C5 的 convSettingsChanged、convDeleted，字段和协议相同）。这一步里 SDK 如果为了提及计数重新拉 convs（F-MEN-03 规则 1：这个会话本地 mentionUnread > 0 时，节流每 5 秒最多一次），应答是这一步的 convs；这些 convs 只用来更新 mentionUnread，modVer 和上次相同，不会引起重拉",
+    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同；某个会话重拉失败只影响它自己，其余会话照拉（P-39 ②），所以集合和顺序无关）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）、file 的 name、text、quote（seq、state、text）、deleted、recalled、recalledBy（缺省为 false / 空）；deleted 的消息只比较 seq、type、deleted、recalled、recalledBy，原文、文件名、引用都必须已清除（内存和本地库搜不到特征串 ZXQ-RCL-2、ZXQ-QUO-1）。convsFetches：event、advance 这一步 SDK 发了几次 convs。mentionUnread：本地记的 mentionUnread（只有 convs 带过这个字段的会话）。C5 的用例另有：conversations 是会话列表的顺序（置顶的在前按 pinnedAt 倒序，其余 updatedAt 倒序，同时间按 convId）；convState 是列表里每个会话的 minSeq、unread、pinned、pinnedAt、notifyOff；removed 是推断为\"你已不在该群\"的群（排好序，生成 removed 快照的那些）；totalUnread 是总未读（普通会话 unread 之和 + 免打扰会话 mentionUnread 之和）。C5 清除的消息里的文件也算在 filesExpired 里（页面丢掉缓存）；清除之后内存和本地库都搜不到特征串 ZXQ-CVS-1",
     "load": "App 打开会话加载最新一页（loadHistory），SDK 发出的 sync 回复 messages，hasMore=false。messages 为空时 SDK 可以不发请求",
     "self": "登录用户。会话 c2c:alice:bob 的对方是 bob",
-    "会话": "{convId, maxSeq, modVer?, mentionUnread?} 展开为 convs 里的会话：type 按前缀，name=convId，readSeq=maxSeq，minSeq=1，unread=0，lastMsg=null，updatedAt=0；modVer 不写表示老服务端没有这个字段；mentionUnread 不写表示没有这个字段（C4 开关关闭或老服务端），firstMentionSeq 在 mentionUnread>0 时等于 maxSeq",
+    "会话": "{convId, maxSeq, modVer?, mentionUnread?} 展开为 convs 里的会话：type 按前缀，name=convId，readSeq=maxSeq，minSeq=1，unread=0，lastMsg=null，updatedAt=0；modVer 不写表示老服务端没有这个字段；mentionUnread 不写表示没有这个字段（C4 开关关闭或老服务端），firstMentionSeq 在 mentionUnread>0 时等于 maxSeq。C5：minSeq 不写是 1，unread、updatedAt 不写是 0；pinned、pinnedAt、notifyOff 不写表示没有设置（pinned=true 时带 pinnedAt）",
     "消息": "{seq, type, fileId?, name?, expired?, text?, quote?, deleted?, recalled?, recalledBy?} 展开为下行消息：msgId=<convId>#<seq>，clientMsgId=bob-<convId>-<seq>，from=bob，ts=1000+seq；image 的 body 为 {image:{fileId, width:10, height:10, size:100, mime:\"image/png\", expired?}}，file 为 {file:{fileId, name, size:100, mime:\"application/pdf\", expired?}}，text 为 {text, quote?}；quote {seq, state, text?} 展开为 {msgId:<convId>#<seq>, seq, from:\"bob\", type:\"text\", state, text?}；deleted=true 的消息没有 body，带 deleted:true，recalled=true 时再带 recalled:true、recalledAt=2000+seq、recalledBy；expired、deleted、recalled 只在为 true 时出现"
   },
   "self": "alice",
@@ -2462,6 +2462,1497 @@
               "group:g1": 0,
               "group:g2": 0
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "置顶排序：置顶的在前按 pinnedAt 倒序，其余按 updatedAt 倒序，同时间按 convId；convSettingsChanged 改变排序，取消置顶回到按时间",
+      "rule": "F-CVS-01 规则 3，F-CVS-04 规则 1",
+      "acs": [
+        "AC-CVS-01-1",
+        "AC-CVS-04-1"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 100
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:gx",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 400,
+              "pinned": true,
+              "pinnedAt": 2000
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "group:gx",
+              "c2c:alice:bob",
+              "group:g2",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:gx": {
+                "minSeq": 1,
+                "unread": 0,
+                "pinned": true,
+                "pinnedAt": 2000
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "convSettingsChanged",
+            "convId": "group:g1",
+            "pinned": true,
+            "pinnedAt": 3000,
+            "notifyOff": false
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "conversations": [
+              "group:g1",
+              "group:gx",
+              "c2c:alice:bob",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0,
+                "pinned": true,
+                "pinnedAt": 3000
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:gx": {
+                "minSeq": 1,
+                "unread": 0,
+                "pinned": true,
+                "pinnedAt": 2000
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "convSettingsChanged",
+            "convId": "group:gx",
+            "pinned": false,
+            "notifyOff": true
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "conversations": [
+              "group:g1",
+              "group:gx",
+              "c2c:alice:bob",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0,
+                "pinned": true,
+                "pinnedAt": 3000
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:gx": {
+                "minSeq": 1,
+                "unread": 0,
+                "notifyOff": true
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 100,
+              "pinned": true,
+              "pinnedAt": 3000
+            },
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:gx",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 400,
+              "notifyOff": true
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "group:g1",
+              "group:gx",
+              "c2c:alice:bob",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0,
+                "pinned": true,
+                "pinnedAt": 3000
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:gx": {
+                "minSeq": 1,
+                "unread": 0,
+                "notifyOff": true
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "deleted 判断：convs 里消失的群在 deleted 里是删除会话，从列表移除、不生成 removed 快照；不在 deleted 里的推断为\"你已不在该群\"",
+      "rule": "F-CVS-03 规则 6 ①，F-GRP-03 规则 4",
+      "acs": [
+        "AC-CVS-03-5"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 200
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 100
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "g1 两条"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "g1 两条"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            }
+          ],
+          "deleted": [
+            {
+              "convId": "group:g1",
+              "clearedSeq": 2
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [
+              "group:g2"
+            ],
+            "totalUnread": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "deleted 判断：truncated 或 deletedTruncated 为 true 时，消失的群一律不推断",
+      "rule": "F-CVS-03 规则 6 ①（frontend-chat 第 54 条）",
+      "acs": [
+        "AC-CVS-03-5"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 200
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 100
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            }
+          ],
+          "truncated": true,
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 200
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 100
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            }
+          ],
+          "deleted": [
+            {
+              "convId": "group:gx",
+              "clearedSeq": 1
+            }
+          ],
+          "deletedTruncated": true,
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "本地清除（convs 路径）：列表里的会话清除 seq < minSeq 的消息和文件，保留下来的消息里引用被清除消息的摘要照常显示；deleted 里的会话全部清除；迟到的旧应答不写回",
+      "rule": "F-CVS-03 规则 2、6 ②，P-46 ④（frontend-chat 第 62 条）",
+      "acs": [
+        "AC-CVS-03-2",
+        "AC-CVS-03-10",
+        "AC-CVS-04-2"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 200
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "被引用的旧消息"
+            },
+            {
+              "seq": 3,
+              "type": "image",
+              "fileId": "CF1"
+            },
+            {
+              "seq": 4,
+              "type": "text",
+              "text": "回复旧消息",
+              "quote": {
+                "seq": 2,
+                "state": "normal",
+                "text": "被引用的旧消息"
+              }
+            },
+            {
+              "seq": 5,
+              "type": "text",
+              "text": "新的"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "被引用的旧消息"
+                },
+                {
+                  "seq": 3,
+                  "type": "image",
+                  "fileId": "CF1"
+                },
+                {
+                  "seq": 4,
+                  "type": "text",
+                  "text": "回复旧消息",
+                  "quote": {
+                    "seq": 2,
+                    "state": "normal",
+                    "text": "被引用的旧消息"
+                  }
+                },
+                {
+                  "seq": 5,
+                  "type": "text",
+                  "text": "新的"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "file",
+              "fileId": "CF2",
+              "name": "ZXQ-FILE-NAME.pdf"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "被引用的旧消息"
+                },
+                {
+                  "seq": 3,
+                  "type": "image",
+                  "fileId": "CF1"
+                },
+                {
+                  "seq": 4,
+                  "type": "text",
+                  "text": "回复旧消息",
+                  "quote": {
+                    "seq": 2,
+                    "state": "normal",
+                    "text": "被引用的旧消息"
+                  }
+                },
+                {
+                  "seq": 5,
+                  "type": "text",
+                  "text": "新的"
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "file",
+                  "fileId": "CF2",
+                  "name": "ZXQ-FILE-NAME.pdf"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "minSeq": 4,
+              "updatedAt": 300
+            }
+          ],
+          "deleted": [
+            {
+              "convId": "group:g1",
+              "clearedSeq": 2
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [
+              "CF1",
+              "CF2"
+            ],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 4,
+                  "type": "text",
+                  "text": "回复旧消息",
+                  "quote": {
+                    "seq": 2,
+                    "state": "normal",
+                    "text": "被引用的旧消息"
+                  }
+                },
+                {
+                  "seq": 5,
+                  "type": "text",
+                  "text": "新的"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 4,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "被引用的旧消息"
+            },
+            {
+              "seq": 3,
+              "type": "image",
+              "fileId": "CF1"
+            },
+            {
+              "seq": 4,
+              "type": "text",
+              "text": "回复旧消息",
+              "quote": {
+                "seq": 2,
+                "state": "normal",
+                "text": "被引用的旧消息"
+              }
+            },
+            {
+              "seq": 5,
+              "type": "text",
+              "text": "新的"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 4,
+                  "type": "text",
+                  "text": "回复旧消息",
+                  "quote": {
+                    "seq": 2,
+                    "state": "normal",
+                    "text": "被引用的旧消息"
+                  }
+                },
+                {
+                  "seq": 5,
+                  "type": "text",
+                  "text": "新的"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 4,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "file",
+              "fileId": "CF2",
+              "name": "ZXQ-FILE-NAME.pdf"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 4,
+                  "type": "text",
+                  "text": "回复旧消息",
+                  "quote": {
+                    "seq": 2,
+                    "state": "normal",
+                    "text": "被引用的旧消息"
+                  }
+                },
+                {
+                  "seq": 5,
+                  "type": "text",
+                  "text": "新的"
+                }
+              ],
+              "group:g1": []
+            },
+            "conversations": [
+              "c2c:alice:bob"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 4,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "convDeleted：没有更新的消息时从列表移除并清除本地；有更新的消息时留在列表，minSeq = clearedSeq + 1、未读只算之后的、不再置顶、仍免打扰；总未读随之变化",
+      "rule": "F-CVS-03 规则 2、3，F-CVS-04 规则 1（backend-chat 第 84 条）",
+      "acs": [
+        "AC-CVS-04-5",
+        "AC-CVS-03-6",
+        "AC-CVS-03-3"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 10,
+              "modVer": 1,
+              "unread": 3,
+              "updatedAt": 300,
+              "pinned": true,
+              "pinnedAt": 2000
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 10,
+              "modVer": 1,
+              "unread": 4,
+              "updatedAt": 200,
+              "pinned": true,
+              "pinnedAt": 1000,
+              "notifyOff": true
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 2,
+              "modVer": 1,
+              "unread": 2,
+              "updatedAt": 100
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 3,
+                "pinned": true,
+                "pinnedAt": 2000
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 4,
+                "pinned": true,
+                "pinnedAt": 1000,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 2
+              }
+            },
+            "removed": [],
+            "totalUnread": 5
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 9,
+              "type": "text",
+              "text": "ZXQ-CVS-1 旧消息"
+            },
+            {
+              "seq": 10,
+              "type": "image",
+              "fileId": "CF3"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                },
+                {
+                  "seq": 10,
+                  "type": "image",
+                  "fileId": "CF3"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 3,
+                "pinned": true,
+                "pinnedAt": 2000
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 4,
+                "pinned": true,
+                "pinnedAt": 1000,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 2
+              }
+            },
+            "removed": [],
+            "totalUnread": 5
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 7,
+              "type": "text",
+              "text": "七"
+            },
+            {
+              "seq": 8,
+              "type": "text",
+              "text": "八"
+            },
+            {
+              "seq": 9,
+              "type": "text",
+              "text": "九"
+            },
+            {
+              "seq": 10,
+              "type": "text",
+              "text": "十"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "ZXQ-CVS-1 旧消息"
+                },
+                {
+                  "seq": 10,
+                  "type": "image",
+                  "fileId": "CF3"
+                }
+              ],
+              "group:g1": [
+                {
+                  "seq": 7,
+                  "type": "text",
+                  "text": "七"
+                },
+                {
+                  "seq": 8,
+                  "type": "text",
+                  "text": "八"
+                },
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "九"
+                },
+                {
+                  "seq": 10,
+                  "type": "text",
+                  "text": "十"
+                }
+              ]
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 3,
+                "pinned": true,
+                "pinnedAt": 2000
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 4,
+                "pinned": true,
+                "pinnedAt": 1000,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 2
+              }
+            },
+            "removed": [],
+            "totalUnread": 5
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "convDeleted",
+            "convId": "c2c:alice:bob",
+            "clearedSeq": 10
+          },
+          "expect": {
+            "filesExpired": [
+              "CF3"
+            ],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 7,
+                  "type": "text",
+                  "text": "七"
+                },
+                {
+                  "seq": 8,
+                  "type": "text",
+                  "text": "八"
+                },
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "九"
+                },
+                {
+                  "seq": 10,
+                  "type": "text",
+                  "text": "十"
+                }
+              ]
+            },
+            "convsFetches": 0,
+            "conversations": [
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 4,
+                "pinned": true,
+                "pinnedAt": 1000,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 2
+              }
+            },
+            "removed": [],
+            "totalUnread": 2
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "convDeleted",
+            "convId": "group:g1",
+            "clearedSeq": 8
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "九"
+                },
+                {
+                  "seq": 10,
+                  "type": "text",
+                  "text": "十"
+                }
+              ]
+            },
+            "convsFetches": 0,
+            "conversations": [
+              "group:g1",
+              "group:g2"
+            ],
+            "convState": {
+              "group:g1": {
+                "minSeq": 9,
+                "unread": 2,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 2
+              }
+            },
+            "removed": [],
+            "totalUnread": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "总未读：普通会话 unread 之和 + 免打扰会话 mentionUnread 之和；取消免打扰后按 unread 计入；全部在免打扰会话且没有 @ 时为 0",
+      "rule": "F-CVS-02 规则 4",
+      "acs": [
+        "AC-CVS-02-5",
+        "AC-CVS-02-2",
+        "AC-CVS-02-4"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 1,
+              "unread": 2,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 5,
+              "modVer": 1,
+              "mentionUnread": 1,
+              "unread": 5,
+              "updatedAt": 200,
+              "notifyOff": true
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "mentionUnread": {
+              "group:g1": 1
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 2
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 5,
+                "notifyOff": true
+              }
+            },
+            "removed": [],
+            "totalUnread": 3
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "convSettingsChanged",
+            "convId": "group:g1",
+            "pinned": false,
+            "notifyOff": false
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 2
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 5
+              }
+            },
+            "removed": [],
+            "totalUnread": 7
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 1,
+              "unread": 2,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 3,
+              "modVer": 1,
+              "unread": 3,
+              "updatedAt": 250
+            },
+            {
+              "convId": "group:g1",
+              "maxSeq": 5,
+              "modVer": 1,
+              "mentionUnread": 0,
+              "unread": 5,
+              "updatedAt": 200,
+              "notifyOff": true
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "mentionUnread": {
+              "group:g1": 0
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g2",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 2
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 5,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 3
+              }
+            },
+            "removed": [],
+            "totalUnread": 5
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 7,
+              "modVer": 1,
+              "mentionUnread": 0,
+              "unread": 7,
+              "updatedAt": 200,
+              "notifyOff": true
+            },
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 300
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 0,
+              "modVer": 1,
+              "updatedAt": 250
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "mentionUnread": {
+              "group:g1": 0
+            },
+            "conversations": [
+              "c2c:alice:bob",
+              "group:g2",
+              "group:g1"
+            ],
+            "convState": {
+              "c2c:alice:bob": {
+                "minSeq": 1,
+                "unread": 0
+              },
+              "group:g1": {
+                "minSeq": 1,
+                "unread": 7,
+                "notifyOff": true
+              },
+              "group:g2": {
+                "minSeq": 1,
+                "unread": 0
+              }
+            },
+            "removed": [],
+            "totalUnread": 0
           }
         }
       ]

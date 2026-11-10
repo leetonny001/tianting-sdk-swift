@@ -68,8 +68,11 @@ public enum IMEvent: Sendable {
     case banner(Bool)
     case conversations([Conversation])
     case messages(convId: String, messages: [Message])
-    /// Unread across all conversations changed (G-UI-15).
+    /// The total unread changed (G-UI-15), counted as `totalUnread()` (F-CVS-02 rule 4).
     case totalUnread(Int)
+    /// A conversation was deleted (my `deleteConv` succeeded, or another device of mine deleted it, F-CVS-04 rule 1): its
+    /// local messages are already purged; drop its draft (F-CVS-03 rule 7, on every device, frontend-chat 55).
+    case convDeleted(convId: String)
     /// Queued + sending + failed messages changed (logout confirmation, G-UI-20).
     case pendingCount(Int)
     /// One attempt failed, emitted once per failure (G-UI-22).
@@ -202,6 +205,8 @@ public final class IMClient {
     var job: UploadJob?
     /// What the outbox table holds, to write only what changed.
     var outboxWritten: [String: OutboxRow] = [:]
+    /// A purge reached the database and is recorded as pending until its cached files are gone too.
+    var purgesOpen = false
     /// fileIds this device completed itself (F-FILE-07 rule 4, v1.4, P-37 ①): a `send` 4048 for one of them means the
     /// unbound upload was purged, like 4096. Others' fileIds (forwarding) keep failing with 4048.
     var ownFileIds: Set<String> = []
@@ -586,10 +591,6 @@ public final class IMClient {
         store.snapshot(convId)
     }
 
-    public func totalUnread() -> Int64 {
-        store.conversations().reduce(0) { $0 + $1.unread }
-    }
-
     /// Queued, sending and failed messages across conversations.
     public func pendingCount() -> Int {
         store.pendingCount()
@@ -818,6 +819,8 @@ public final class IMClient {
         case "convAdded":
             let ev = try decodeFrameData(ConvAddedEvent.self, from: raw)
             store.upsertConversation(ev.conv)
+            // Its minSeq lowers the floor (rule 6a) or purges below it (rule 6 ②), like convs.
+            if store.purgeConversation(ev.conv.convId, ev.conv.minSeq) { emitMessages(ev.conv.convId) }
             setGroupMute(ev.conv.convId, ev.conv.mutedUntil, allMuted: ev.conv.allMuted)
             mutesChanged()
             emitConversations()
@@ -856,6 +859,11 @@ public final class IMClient {
             social.settings.strangerMsgLimit = ev.strangerMsgLimit
             persistSocialMeta()
             emitSocial()
+        case "convSettingsChanged":
+            onConvSettingsChanged(try decodeFrameData(ConvSettingsChangedEvent.self, from: raw))
+        case "convDeleted":
+            let ev = try decodeFrameData(ConvDeletedEvent.self, from: raw)
+            convCleared(ev.convId, ev.clearedSeq)
         default:
             break  // Unknown event types are ignored (protocol README section 3 rule 9).
         }
@@ -1011,9 +1019,14 @@ public final class IMClient {
         }
     }
 
-    /// Applies a `convs` result. Groups present before and absent now count as removed (not when truncated).
+    /// Applies a `convs` result. Groups present before and absent now count as removed (not when truncated), unless they
+    /// are in `deleted` (C5). Every conversation is purged below its minSeq (F-CVS-03 rule 6 ②): those in `deleted` below
+    /// clearedSeq + 1, those in the list below their minSeq.
     func applyConvs(_ ack: ConvsAck) {
-        let gone = store.setConversations(ack.convs, truncated: ack.truncated)
+        let gone = store.setConversations(
+            ack.convs, truncated: ack.truncated, deleted: ack.deleted, deletedTruncated: ack.deletedTruncated)
+        for d in ack.deleted where store.purgeConversation(d.convId, d.clearedSeq + 1) { emitMessages(d.convId) }
+        for c in ack.convs where store.purgeConversation(c.convId, c.minSeq) { emitMessages(c.convId) }
         lastRefreshAt = clock.now()
         for c in ack.convs {
             setGroupMute(c.convId, c.mutedUntil, allMuted: c.allMuted)
@@ -1243,8 +1256,13 @@ public final class IMClient {
         let expired = store.takeExpiredFiles()
         if !expired.isEmpty {
             for id in expired { forgetFile(id, recalled: recalled.contains(id)) }
-            emit(.filesExpired(expired))
         }
+        // A purge is finished once its cached files are gone too (a crash before this purges again on the next start).
+        if purgesOpen, let db = database {
+            purgesOpen = false
+            do { try db.finishPurges() } catch { dropDatabaseAfterFailure(error) }
+        }
+        if !expired.isEmpty { emit(.filesExpired(expired)) }
     }
 
     private func emitPendingCount() {
@@ -1283,6 +1301,10 @@ public final class IMClient {
         let url = dir.appendingPathComponent(LocalDatabase.fileName(userId: userId))
         do {
             database = try openOrRebuild(url: url)
+            // A purge the last run did not finish (F-CVS-03: "本地清除失败：下次启动再清"): rows, free pages, cached files.
+            let purgedFiles = try database!.runPendingPurges()
+            for id in purgedFiles { forgetFile(id) }
+            try database!.finishPurges()
             let chat = try database!.loadChat(maxMessagesPerConversation: maxCached)
             store.restore(
                 convStates: chat.conversations, messages: chat.messages, refs: try database!.loadRefs())
@@ -1317,7 +1339,9 @@ public final class IMClient {
             return
         }
         do {
-            try db.apply(store.drainChanges())
+            let changes = store.drainChanges()
+            if !changes.purges.isEmpty { purgesOpen = true }
+            try db.apply(changes)
             try writeOutbox(db)
         } catch {
             dropDatabaseAfterFailure(error)

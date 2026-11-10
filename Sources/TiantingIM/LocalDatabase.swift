@@ -37,9 +37,13 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 /// messages never loaded, so a late old sync after a cold start cannot bring their text back (F-RCL-03 rule 2a); the
 /// recalled, quote and mentions fields of messages and the mention counts of conversations live in the JSON columns, so
 /// versions 1 and 2 are upgraded in place too. The version goes up anyway: an older SDK opening a version 3 file rebuilds
-/// it instead of keeping rows it does not understand. Any other version is dropped and refilled from the server.
+/// it instead of keeping rows it does not understand. Version 4 (C5) adds `pending_purges`: before stored messages below a
+/// conversation's minSeq are deleted (a deletion of the conversation, F-CVS-03 rule 6 ②) the purge is recorded there,
+/// and it is removed only after the rows, the free pages and the cached files are gone, so a purge that fails or is cut
+/// short runs again on the next start (F-CVS-03 "本地清除失败：下次启动再清"). Pinned and notifications off live in the
+/// conversation JSON. Versions 1 to 3 are upgraded in place. Any other version is dropped and refilled from the server.
 final class LocalDatabase {
-    static let schemaVersion: Int32 = 3
+    static let schemaVersion: Int32 = 4
 
     let url: URL
     private var db: OpaquePointer?
@@ -47,6 +51,8 @@ final class LocalDatabase {
 
     /// Test hook: makes the next `apply` fail as a full disk would.
     var failNextWrite = false
+    /// Test hook: the next purge stops right after recording itself as pending, as if the process were killed there.
+    var interruptNextPurge = false
 
     /// `refuseSecureDelete` simulates an SQLite build without the pragma, to exercise the VACUUM fallback.
     init(url: URL, refuseSecureDelete: Bool = false) throws {
@@ -82,11 +88,12 @@ final class LocalDatabase {
         try exec("PRAGMA synchronous=NORMAL")
         try exec("PRAGMA temp_store=MEMORY")
         var version = try pragmaInt("PRAGMA user_version")
-        if version == 1 || version == 2 {
+        if (1...3).contains(version) {
             let from = version
             try inTransaction {
                 if from == 1 { try exec(LocalDatabase.outboxSchema) }
-                try exec(LocalDatabase.refsSchema)
+                if from <= 2 { try exec(LocalDatabase.refsSchema) }
+                try exec(LocalDatabase.purgesSchema)
                 try exec("PRAGMA user_version=\(LocalDatabase.schemaVersion)")
             }
             version = Int64(LocalDatabase.schemaVersion)
@@ -103,6 +110,7 @@ final class LocalDatabase {
                 DROP TABLE IF EXISTS blocks;
                 DROP TABLE IF EXISTS outbox;
                 DROP TABLE IF EXISTS deleted_refs;
+                DROP TABLE IF EXISTS pending_purges;
                 """)
             try createSchema()
         }
@@ -137,6 +145,7 @@ final class LocalDatabase {
             CREATE TABLE blocks (user_id TEXT PRIMARY KEY, item TEXT NOT NULL);
             \(LocalDatabase.outboxSchema)
             \(LocalDatabase.refsSchema)
+            \(LocalDatabase.purgesSchema)
             PRAGMA user_version=\(LocalDatabase.schemaVersion);
             """)
     }
@@ -148,6 +157,42 @@ final class LocalDatabase {
     /// Deleted and recalled references (C4): kind "id" (msgId), "seq", "recalled" (JSON, see `RecalledRef`). No text.
     static let refsSchema =
         "CREATE TABLE deleted_refs (conv_id TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY (conv_id, kind, ref));"
+
+    /// Purges not finished yet (C5): stored messages of `conv_id` below `min_seq` must go. No text.
+    static let purgesSchema = "CREATE TABLE pending_purges (conv_id TEXT PRIMARY KEY, min_seq INTEGER NOT NULL);"
+
+    // MARK: Purges (F-CVS-03 rule 6 ②)
+
+    /// Runs the purges an earlier run left unfinished (the startup half of "本地清除失败：下次启动再清"). Returns the file ids
+    /// of the deleted rows, whose cached downloads the caller removes before calling `finishPurges`.
+    func runPendingPurges() throws -> [String] {
+        var pending: [(String, Int64)] = []
+        try query("SELECT conv_id, min_seq FROM pending_purges", []) { stmt in
+            if let c = sqlite3_column_text(stmt, 0) { pending.append((String(cString: c), sqlite3_column_int64(stmt, 1))) }
+        }
+        guard !pending.isEmpty else { return [] }
+        var files: [String] = []
+        try inTransaction {
+            for (convId, minSeq) in pending {
+                try query("SELECT message FROM messages WHERE conv_id = ? AND seq < ?", [.text(convId), .int(minSeq)]) {
+                    if let id = decodeColumn(Message.self, $0, 0)?.body.fileId, !files.contains(id) { files.append(id) }
+                }
+                try run("DELETE FROM messages WHERE conv_id = ? AND seq < ?", [.text(convId), .int(minSeq)])
+            }
+        }
+        if !secureDelete { try exec("VACUUM") }
+        return files
+    }
+
+    /// Whether purges are recorded and not finished.
+    func hasPendingPurges() throws -> Bool {
+        try pragmaInt("SELECT count(*) FROM pending_purges") > 0
+    }
+
+    /// The rows, free pages and cached files of every recorded purge are gone: forget them.
+    func finishPurges() throws {
+        try run("DELETE FROM pending_purges", [])
+    }
 
     // MARK: Outbox
 
@@ -200,7 +245,27 @@ final class LocalDatabase {
     /// Writes one batch of conversation and message changes in a single transaction.
     func apply(_ c: LocalChanges) throws {
         guard !c.isEmpty else { return }
+        if !c.purges.isEmpty {
+            // Recorded first, in its own transaction: if what follows fails or is cut short, the next start purges again.
+            try inTransaction {
+                for p in c.purges {
+                    try run(
+                        """
+                        INSERT INTO pending_purges (conv_id, min_seq) VALUES (?, ?)
+                          ON CONFLICT(conv_id) DO UPDATE SET min_seq = max(min_seq, excluded.min_seq)
+                        """,
+                        [.text(p.convId), .int(p.minSeq)])
+                }
+            }
+            if interruptNextPurge {
+                interruptNextPurge = false
+                throw LocalDatabaseError(description: "injected interruption after the purge record")
+            }
+        }
         try inTransaction {
+            for p in c.purges {
+                try run("DELETE FROM messages WHERE conv_id = ? AND seq < ?", [.text(p.convId), .int(p.minSeq)])
+            }
             for id in c.clearMessages {
                 try run("DELETE FROM messages WHERE conv_id = ?", [.text(id)])
             }
@@ -226,7 +291,7 @@ final class LocalDatabase {
         }
         // Recalls and cleared quotes scrub the file like deletions (with secure_delete the freed cells are zeroed).
         let wiped =
-            c.wiped || !c.clearMessages.isEmpty || !c.deleteConvs.isEmpty
+            c.wiped || !c.clearMessages.isEmpty || !c.deleteConvs.isEmpty || !c.purges.isEmpty
             || c.upsertMessages.contains { $0.deleted == true }
             || c.upsertConvs.contains { $0.view.lastMsg?.deleted == true }
         if !secureDelete, wiped { try exec("VACUUM") }

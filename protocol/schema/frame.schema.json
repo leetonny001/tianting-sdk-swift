@@ -220,6 +220,12 @@
         },
         {
           "$ref": "#/$defs/RecallReq"
+        },
+        {
+          "$ref": "#/$defs/ConvSetReq"
+        },
+        {
+          "$ref": "#/$defs/ConvDeleteReq"
         }
       ]
     },
@@ -1974,9 +1980,47 @@
         "firstMentionSeq": {
           "$ref": "#/$defs/Seq",
           "description": "未读里第一条提及我的 seq；mentionUnread=0 时没有"
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "置顶（PRD-chat F-CVS-01，C5）。没有置顶时服务端不带这个字段；老服务端没有，按 false"
+        },
+        "pinnedAt": {
+          "$ref": "#/$defs/TimestampMs",
+          "description": "置顶时间，只在 pinned=true 时出现；置顶的会话按它倒序排在最前（F-CVS-01 规则 3）"
+        },
+        "notifyOff": {
+          "type": "boolean",
+          "description": "免打扰（PRD-chat F-CVS-02，C5）：不推送、未读照常计算。没有免打扰时服务端不带这个字段；老服务端没有，按 false。不叫 muted：mutedUntil、allMuted 是禁言"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "pinned"
+            ],
+            "properties": {
+              "pinned": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pinnedAt"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "pinnedAt"
+              ]
+            }
+          }
+        }
+      ]
     },
     "Ack": {
       "type": "object",
@@ -1993,7 +2037,7 @@
         },
         "data": {
           "type": "object",
-          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}；deviceNotificationSettings → {showDetail}；deviceNotificationRegister、deviceNotificationUnregister、presence、recall → {}",
+          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated, deleted?, deletedTruncated?}；convSet → {conv}；convDelete → {clearedSeq}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}；deviceNotificationSettings → {showDetail}；deviceNotificationRegister、deviceNotificationUnregister、presence、recall → {}",
           "properties": {
             "userId": {
               "$ref": "#/$defs/UserId"
@@ -2382,6 +2426,36 @@
             "showDetail": {
               "type": "boolean",
               "description": "deviceNotificationSettings：这台设备当前的\"显示发送者和内容\"（PRD-chat F-APN-03 规则 2）"
+            },
+            "clearedSeq": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "convDelete：清除到的 seq（min(upToSeq, maxSeq)，不小于原有值，C5）"
+            },
+            "deleted": {
+              "type": "array",
+              "description": "convs（PRD-chat F-CVS-03 规则 6，C5）：当前被我删除且没有新消息的会话，单聊和群都有，按删除时间倒序，最多 IM_CONV_DELETED_MAX（默认 2000）个。SDK 把 convs 里消失的群当作\"你已不在该群\"之前必须先查这个列表；对任何会话物理清除 seq < minSeq 的本地消息。没有删除的会话时不带",
+              "items": {
+                "type": "object",
+                "required": [
+                  "convId",
+                  "clearedSeq"
+                ],
+                "properties": {
+                  "convId": {
+                    "$ref": "#/$defs/ConvId"
+                  },
+                  "clearedSeq": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "deletedTruncated": {
+              "type": "boolean",
+              "description": "convs：deleted 超过上限被截断时为 true（C5），其他时候不带"
             }
           },
           "additionalProperties": false
@@ -2762,6 +2836,82 @@
                     "pc"
                   ],
                   "description": "触发这条提醒的设备平台"
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "PRD-chat F-CVS-04 规则 1（C5）：convSet 成功后发给同一用户的其他在线连接（不发给发起连接）。pinnedAt 只在 pinned=true 时出现。事件丢失时下次 convs 补齐",
+              "required": [
+                "type",
+                "convId",
+                "pinned",
+                "notifyOff"
+              ],
+              "properties": {
+                "type": {
+                  "const": "convSettingsChanged"
+                },
+                "convId": {
+                  "$ref": "#/$defs/ConvId"
+                },
+                "pinned": {
+                  "type": "boolean"
+                },
+                "pinnedAt": {
+                  "$ref": "#/$defs/TimestampMs"
+                },
+                "notifyOff": {
+                  "type": "boolean"
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "pinned"
+                    ],
+                    "properties": {
+                      "pinned": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "pinnedAt"
+                    ]
+                  },
+                  "else": {
+                    "not": {
+                      "required": [
+                        "pinnedAt"
+                      ]
+                    }
+                  }
+                }
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "PRD-chat F-CVS-04 规则 1（C5）：convDelete 成功后发给同一用户的其他在线连接。意味着已读到 clearedSeq、置顶清除、minSeq = clearedSeq + 1，不另发 readUpdated、convSettingsChanged（backend-chat 第 84 条）；SDK 从列表移除并清除本地 seq ≤ clearedSeq 的消息",
+              "required": [
+                "type",
+                "convId",
+                "clearedSeq"
+              ],
+              "properties": {
+                "type": {
+                  "const": "convDeleted"
+                },
+                "convId": {
+                  "$ref": "#/$defs/ConvId"
+                },
+                "clearedSeq": {
+                  "type": "integer",
+                  "minimum": 0
                 }
               },
               "additionalProperties": false
@@ -3422,6 +3572,110 @@
             "msgId": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConvSetReq": {
+      "type": "object",
+      "description": "PRD-chat F-CVS-01、02（C5）：置顶、免打扰。普通带 id 的命令，幂等；pinned、notifyOff 至少一项（都没有 4000）。ack data 是 {conv}（完整的 Conversation）。只能操作自己参与的会话：单聊非参与方 4032、非群成员 4033、群不存在或已解散 4043、没有消息的单聊 4040；置顶超过 IM_CONV_PIN_MAX（默认 20）4220；和 convDelete 共用每人每秒 5 次的限流（4290）。IM_CONV_SETTINGS_ENABLED 关闭 4030 featureDisabled。字段叫 notifyOff，不用 muted（R-CB-26）",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "convSet"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "convId"
+          ],
+          "properties": {
+            "convId": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ConvId"
+                },
+                {
+                  "not": {
+                    "pattern": "^room:"
+                  }
+                }
+              ],
+              "description": "单聊或群聊；聊天室没有会话设置"
+            },
+            "pinned": {
+              "type": "boolean"
+            },
+            "notifyOff": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "pinned"
+              ]
+            },
+            {
+              "required": [
+                "notifyOff"
+              ]
+            }
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConvDeleteReq": {
+      "type": "object",
+      "description": "PRD-chat F-CVS-03（C5）：删除会话（只影响自己）。upToSeq 是客户端看到的最大 seq，服务端取 min(upToSeq, maxSeq)；clearedSeq 只增不减（小于已有值时幂等成功）。不存在的、已删除的、没有消息的单聊再删：幂等成功。单聊非参与方 4032、非群成员 4033、群已解散 4043；和 convSet 共用限流（4290）。ack data 是 {clearedSeq}。IM_CONV_SETTINGS_ENABLED 关闭 4030 featureDisabled",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "convDelete"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "convId",
+            "upToSeq"
+          ],
+          "properties": {
+            "convId": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ConvId"
+                },
+                {
+                  "not": {
+                    "pattern": "^room:"
+                  }
+                }
+              ],
+              "description": "单聊或群聊；聊天室没有会话设置"
+            },
+            "upToSeq": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "0 表示没有消息的会话（空群）"
             }
           },
           "additionalProperties": false

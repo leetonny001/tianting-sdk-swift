@@ -188,10 +188,15 @@ public struct AccountConfig: Sendable, Equatable, Decodable {
         /// Recall, quote and @ (C4, BE-479; F-UI-09 rule 4): false keeps only "复制" in the message menu. nil when an
         /// older server does not send it.
         public var msgActions: Bool?
+        /// Pin, notifications off and delete for conversations (C5, IM_CONV_SETTINGS_ENABLED): false hides the menu
+        /// entries (AC-CVS-01-6). nil when an older server does not send it. Off only blocks new changes (4030): the SDK
+        /// keeps applying existing pins, notifications off and deletions either way (P-46 ②).
+        public var convSettings: Bool?
 
-        public init(files: Bool, msgActions: Bool? = nil) {
+        public init(files: Bool, msgActions: Bool? = nil, convSettings: Bool? = nil) {
             self.files = files
             self.msgActions = msgActions
+            self.convSettings = convSettings
         }
     }
     public struct Limits: Sendable, Equatable, Decodable {

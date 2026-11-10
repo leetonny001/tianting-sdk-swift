@@ -333,10 +333,16 @@ struct ServerConversation: Sendable, Decodable {
     var mentionUnread: Int64?
     /// The first unread seq mentioning me; absent when `mentionUnread == 0`.
     var firstMentionSeq: Int64?
+    /// Pinned (PRD-chat F-CVS-01, C5); absent when not pinned and on older servers.
+    var pinned: Bool?
+    /// When it was pinned, only with `pinned == true`: pinned conversations sort by it, newest first (rule 3).
+    var pinnedAt: Int64?
+    /// Notifications off (F-CVS-02, C5): no push, unread still counts. Not `muted` (that is a mute in a group).
+    var notifyOff: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil, allMuted,
-            modVer, mentionUnread, firstMentionSeq
+            modVer, mentionUnread, firstMentionSeq, pinned, pinnedAt, notifyOff
     }
 
     init(from decoder: Decoder) throws {
@@ -357,7 +363,26 @@ struct ServerConversation: Sendable, Decodable {
         modVer = try? c.decodeIfPresent(Int64.self, forKey: .modVer)
         mentionUnread = try? c.decodeIfPresent(Int64.self, forKey: .mentionUnread)
         firstMentionSeq = try? c.decodeIfPresent(Int64.self, forKey: .firstMentionSeq)
+        pinned = try? c.decodeIfPresent(Bool.self, forKey: .pinned)
+        pinnedAt = pinned == true ? (try? c.decodeIfPresent(Int64.self, forKey: .pinnedAt)) : nil
+        notifyOff = try? c.decodeIfPresent(Bool.self, forKey: .notifyOff)
     }
+}
+
+/// One `convs.deleted` item (F-CVS-03 rule 6, C5): a conversation I deleted that has had no new message since.
+struct DeletedConv: Sendable, Decodable, Hashable {
+    var convId: String
+    var clearedSeq: Int64
+}
+
+/// The `convSet` ack (C5): the whole conversation after the change.
+struct ConvSetAck: Sendable, Decodable {
+    var conv: ServerConversation
+}
+
+/// The `convDelete` ack (C5): min(upToSeq, maxSeq), never below an earlier value.
+struct ConvDeleteAck: Sendable, Decodable {
+    var clearedSeq: Int64
 }
 
 struct SendAck: Sendable, Decodable {
@@ -375,13 +400,20 @@ struct SyncAck: Sendable, Decodable {
 struct ConvsAck: Sendable, Decodable {
     var convs: [ServerConversation]
     var truncated: Bool
+    /// Conversations I deleted with no new message since (C5): a group missing from `convs` but here is not "removed".
+    /// Older servers do not send it.
+    var deleted: [DeletedConv] = []
+    /// `deleted` was cut at its limit (C5): like `truncated`, no "removed" inference then (frontend-chat 54).
+    var deletedTruncated = false
 
-    private enum CodingKeys: String, CodingKey { case convs, truncated }
+    private enum CodingKeys: String, CodingKey { case convs, truncated, deleted, deletedTruncated }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         convs = try c.decode([ServerConversation].self, forKey: .convs)
         truncated = c.value(.truncated, default: false)
+        deleted = c.value(.deleted, default: [])
+        deletedTruncated = c.value(.deletedTruncated, default: false)
     }
 }
 

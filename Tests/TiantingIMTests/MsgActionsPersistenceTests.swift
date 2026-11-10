@@ -394,7 +394,7 @@ final class MsgActionsPersistenceTests: IMTestCase {
         return url
     }
 
-    func testDatabaseVersion2UpgradesInPlaceTo3KeepingRowsAndBaselineOldRowsDecodeWithoutC4Fields() async throws {
+    func testDatabaseVersion2UpgradesInPlaceKeepingRowsAndBaselineOldRowsDecodeWithoutC4Fields() async throws {
         let url = try createV2()
         let h = reopen()
         XCTAssertEqual(statusOf(h, G), ["x1:sent#1", "x2:sent#2"])
@@ -411,7 +411,7 @@ final class MsgActionsPersistenceTests: IMTestCase {
         XCTAssertTrue(h.bySeq(G, 2).isDeleted)
         c.receive(recalledEvent(G, 1, by: "bob"))
         h.im.close()
-        XCTAssertEqual(try rows(url, "PRAGMA user_version"), ["3"])
+        XCTAssertEqual(try rows(url, "PRAGMA user_version"), [String(LocalDatabase.schemaVersion)])
         XCTAssertEqual(Set(try rows(url, "SELECT DISTINCT kind FROM deleted_refs")), ["id", "seq", "recalled"])
         XCTAssertEqual(try rows(url, "SELECT count(*) FROM outbox"), ["0"])
         clean("ZXQ-DEL-OLD")
@@ -420,7 +420,7 @@ final class MsgActionsPersistenceTests: IMTestCase {
         XCTAssertEqual(h2.im.messages(G).map { "\($0.isDeleted):\($0.isRecalled)" }, ["true:true", "true:false", "false:false"])
     }
 
-    func testDatabaseVersion1UpgradesInPlaceTo3() async throws {
+    func testDatabaseVersion1UpgradesInPlace() async throws {
         let url = dir.appendingPathComponent(LocalDatabase.fileName(userId: "alice"))
         let state = #"{"view":{"convId":"group:g1","type":"group","name":"v1 群","maxSeq":1,"readSeq":1,"minSeq":1,"unread":0,"updatedAt":5},"readBase":1}"#
         try execRaw(
@@ -440,17 +440,17 @@ final class MsgActionsPersistenceTests: IMTestCase {
         let h = reopen()
         XCTAssertEqual(h.convOf(G).name, "v1 群")
         h.im.close()
-        XCTAssertEqual(try rows(url, "PRAGMA user_version"), ["3"])
+        XCTAssertEqual(try rows(url, "PRAGMA user_version"), [String(LocalDatabase.schemaVersion)])
         XCTAssertEqual(try rows(url, "SELECT count(*) FROM deleted_refs"), ["0"])
         XCTAssertEqual(try rows(url, "SELECT count(*) FROM outbox"), ["0"])
     }
 
-    func testDatabaseVersionNewerThan3IsRebuiltAsACache() async throws {
-        let url = try createV2(version: 4)
+    func testDatabaseVersionNewerThanCurrentIsRebuiltAsACache() async throws {
+        let url = try createV2(version: Int(LocalDatabase.schemaVersion) + 1)
         let h = reopen()
         XCTAssertEqual(h.im.conversations(), [])
         h.im.close()
-        XCTAssertEqual(try rows(url, "PRAGMA user_version"), ["3"])
+        XCTAssertEqual(try rows(url, "PRAGMA user_version"), [String(LocalDatabase.schemaVersion)])
         clean("老消息")
     }
 }

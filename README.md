@@ -154,6 +154,27 @@ quoteSummary(m); quoteLabel(quote)               // 引用摘要（规则 2）�
 | 本地库 | 第 3 版：新表 `deleted_refs`（已删除的 msgId、seq 和撤回信息，含没加载过的消息，跨冷启动保留，问题 17）。第 1、2 版原地升级，旧行保留；更新或不认识的版本按缓存重建。撤回、清引用后照样 `secure_delete`（不支持时 VACUUM），数据库文件里搜不到原文 |
 | 日志 | 引用文字、@ 的内容不进日志（`QuoteView.description` 不带 text） |
 
+## 置顶、免打扰、删除会话（FE-682，C5）
+
+语义和 sdk-ts（FE-680）、sdk-kotlin（FE-681）相同（PRD-chat 第 9 节）。服务端开关 `IM_CONV_SETTINGS_ENABLED`；`AccountConfig.features.convSettings` 为 `false` 时页面不出菜单（老服务端没有这个字段，为 `nil`），关闭时只拦新命令（4030），已有的置顶、免打扰、删除 SDK 照常应用（P-46 ②）。
+
+```swift
+try await im.setConvPinned(convId, true)     // 乐观更新：先移到最前；ack 的 conv 覆盖本地；失败回滚并抛出，不自动重试
+try await im.setConvNotifyOff(convId, true)  // 同上（4220 置顶已满、4290、4030、5000、超时、未连接都回滚）
+try await im.deleteConv(convId)              // upToSeq = 本地看到的最大 seq；先从列表消失，失败恢复；确认框由 App 弹
+im.totalUnread()                             // 普通会话的 unread 之和 + 免打扰会话的 mentionUnread 之和；.totalUnread 同口径
+// IMEvent.convDeleted(convId:)：本端删除成功或其他设备删除了它，App 清这个会话的草稿
+```
+
+| | |
+|---|---|
+| 模型 | `Conversation.pinned`、`pinnedAt`、`notifyOff`（没有时为 nil，按 false；`isPinned`、`isNotifyOff`）；`conversations()` 置顶的在前按 `pinnedAt` 倒序，其余 `updatedAt` 倒序，同时间按 `convId`；置顶时间相同时再按 `updatedAt` 倒序、`convId`（和服务端 `convListOrder` 一致） |
+| 多端 | `convSettingsChanged` 覆盖本地；等 ack 期间其他端改过的，失败时不回滚成旧值。重连靠 `convs`，以服务端为准 |
+| 删除 | `minSeq = clearedSeq + 1`、已读推进到 `clearedSeq`、不再置顶、保留免打扰；`seq < minSeq` 的消息从内存、本地库和下载缓存清除（`.filesExpired`），迟到的 sync、ack 不写回（我自己的、ack 落在清除范围内的待发消息一起去掉）。本端删除时这个会话的附件取消上传（服务端删临时对象）、排队和失败的消息丢弃（问题 59），发送中的不动；其他设备删除时本机没发出的消息保留（问题 63）。之后有新消息会话按删除时的状态重新出现，未读只算新消息 |
+| 引用 | 保留下来的消息（seq ≥ minSeq）里的引用摘要照常显示（P-46 ④）；只有还没发出、引用了被清除消息的，引用原文清除（state 改 deleted，问题 62） |
+| `convs` | `deleted` 里的群不是"你已不在该群"（没有 `.convRemoved`、没有快照，AC-CVS-03-5）；`truncated` 或 `deletedTruncated` 时不推断（问题 54）；列表里的会话（和 `convAdded`）按各自的 `minSeq` 清除；服务端的 `minSeq` 比本地下限小（重新入群按新成员算、`historyVisible`，规则 6a，问题 65）时放低下限，旧历史可以重新加载 |
+| 本地库 | 第 4 版：新表 `pending_purges`。清除前先记"待清除"（单独一个事务），删除消息行、释放的页清零（不支持 `secure_delete` 时 VACUUM）、缓存文件删掉之后才去掉记录；中途失败或进程被杀，下次启动先补做（F-CVS-03 异常）。置顶、免打扰在会话 JSON 里，冷启动先显示。第 1～3 版原地升级 |
+
 ## 本地库
 
 每个用户一个 SQLite 文件（文件名是 userId 的十六进制，避免大小写不敏感的文件系统把 alice 和 Alice 合并），保存会话、已确认的消息（每个会话最近 `maxCachedMessagesPerConversation` 条，默认 100）、社交状态和没发出的图片文件（`outbox`）。token、预签名地址和未确认的文本不落盘。

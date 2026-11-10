@@ -91,6 +91,45 @@ public struct Conversation: Sendable, Hashable, Codable {
     public var mentionUnread: Int64? = nil
     /// The first unread seq mentioning me (the "有人@我" jump button).
     public var firstMentionSeq: Int64? = nil
+    /// Pinned (PRD-chat F-CVS-01, C5): nil or false is not pinned.
+    public var pinned: Bool? = nil
+    /// When it was pinned (only while pinned). Right after a local `setConvPinned` and before the ack, the local estimate
+    /// of server time.
+    public var pinnedAt: Int64? = nil
+    /// Notifications off (F-CVS-02): the list shows a dot instead of a number, and only mentions of me count towards
+    /// `totalUnread()`. nil or false is off.
+    public var notifyOff: Bool? = nil
+
+    public var isPinned: Bool { pinned == true }
+    public var isNotifyOff: Bool { notifyOff == true }
+}
+
+/// What `convSet` and `convSettingsChanged` change.
+struct ConvSettings: Sendable, Hashable {
+    var pinned: Bool
+    var pinnedAt: Int64?
+    var notifyOff: Bool
+
+    init(pinned: Bool, pinnedAt: Int64? = nil, notifyOff: Bool) {
+        self.pinned = pinned
+        self.pinnedAt = pinned ? pinnedAt : nil
+        self.notifyOff = notifyOff
+    }
+
+    init(of c: Conversation) {
+        self.init(pinned: c.pinned == true, pinnedAt: c.pinnedAt, notifyOff: c.notifyOff == true)
+    }
+
+    init(of c: ServerConversation) {
+        self.init(pinned: c.pinned == true, pinnedAt: c.pinnedAt, notifyOff: c.notifyOff == true)
+    }
+
+    /// Writes into a conversation; false fields are left out, as the server leaves them out.
+    func apply(to c: inout Conversation) {
+        c.pinned = pinned ? true : nil
+        c.pinnedAt = pinned ? pinnedAt : nil
+        c.notifyOff = notifyOff ? true : nil
+    }
 }
 
 /// What is known about a recall (msgDeleted's `recalled`, or sync's recalled, recalledBy, recalledAt). An empty `by`
@@ -217,6 +256,9 @@ final class MessageList {
 
     /// The earliest loaded seq (for paging back); 0 when nothing is loaded.
     var oldestSeq: Int64 = 0
+    /// The lowest seq this device may hold (the conversation's minSeq, F-CVS-03 rules 2, 6): anything below was purged,
+    /// and a late sync answer or send ack below it is not written back.
+    private(set) var floor: Int64 = 1
     var hasMoreHistory = true
 
     /// Loaded from the network during this login, so a reconnect re-checks it (F-ADM-31 rule 5).
@@ -231,6 +273,8 @@ final class MessageList {
     fileprivate var newRefs: [(kind: String, ref: String)] = []
     /// Text left a stored row (a wipe, a cleared quote): without secure_delete the file needs a VACUUM.
     fileprivate var wipedOnDisk = false
+    /// Stored rows below this seq must go (F-CVS-03 rule 6 ②); nil when nothing is waiting.
+    fileprivate var purgeOnDisk: Int64?
 
     /// Merges a server message: dedupes by msgId, merges a pending local message by clientMsgId. Existing messages
     /// merge monotonically (F-RCL-03 rule 2a): `deleted`, `recalled` and a file's `expired` only go false -> true,
@@ -239,6 +283,16 @@ final class MessageList {
     /// merged message, or nil when nothing changed.
     func addServer(_ m: ServerMessage) -> Message? {
         if removedClient.contains(m.clientMsgId) { return nil }
+        if m.seq < floor {
+            // Cleared by a deletion of the conversation (F-CVS-03): a late sync answer or send ack stays out. My own
+            // message still waiting for that ack was stored before the deletion point, so it is gone too.
+            if let local = byClient[m.clientMsgId], local.seq == nil, local.from == m.from {
+                unsent.removeAll { $0.clientMsgId == local.clientMsgId }
+                byClient[m.clientMsgId] = nil
+                removedClient.insert(m.clientMsgId)
+            }
+            return nil
+        }
         touched = true
         let deleted = m.deleted == true || isDeleted(msgId: m.msgId, seq: m.seq)
         let recall = recallOf(m) ?? recallInfo(msgId: m.msgId, seq: m.seq)
@@ -399,6 +453,54 @@ final class MessageList {
         recalledSeqs.merge(r.recalledSeqs) { a, _ in a }
     }
 
+    /// Purges everything below `minSeq` (F-CVS-03 rule 6 ②: physically, from memory and from the local database): the
+    /// messages, their files (through `newlyExpired`, so the caches go), what is remembered about their deletion. Later
+    /// sync answers and send acks below it are not written back. A message not sent yet that quotes a purged one loses the
+    /// quoted text (`.deleted`); sent messages at or above `minSeq` keep the quote the server built for them (P-46 ④,
+    /// frontend-chat 62). Returns whether anything changed.
+    func purgeBelow(_ minSeq: Int64) -> Bool {
+        guard minSeq > floor else { return false }
+        floor = minSeq
+        var gone: Set<String> = []
+        var purged = false
+        for (seq, m) in bySeq where seq < minSeq {
+            noteExpired(m.body)
+            bySeq[seq] = nil
+            dirtySeqs.remove(seq)
+            if byClient[m.clientMsgId]?.seq == seq { byClient[m.clientMsgId] = nil }
+            if let id = m.msgId {
+                byMsgId.remove(id)
+                expiredIds.remove(id)
+                gone.insert(id)
+            }
+            purged = true
+        }
+        // A purged message is not "deleted": a new message quoting it shows the quote as the server sent it.
+        deletedIds.subtract(gone)
+        deletedSeqs = deletedSeqs.filter { $0 >= minSeq }
+        for id in gone { recalledIds[id] = nil }
+        recalledSeqs = recalledSeqs.filter { $0.key >= minSeq }
+        var changed = purged
+        for m in unsent {
+            guard let q = m.body.quote, q.state == .normal, gone.contains(q.msgId) || (q.seq.map { $0 < minSeq } ?? false)
+            else { continue }
+            update(m.clientMsgId) { $0.body.quote = clearedQuote(q, .deleted) }
+            changed = true
+        }
+        if purged { purgeOnDisk = max(purgeOnDisk ?? 0, minSeq) }
+        oldestSeq = bySeq.keys.min() ?? 0
+        if oldestSeq == 0 || oldestSeq <= minSeq { hasMoreHistory = oldestSeq == 0 }
+        return changed
+    }
+
+    /// The server's minSeq went down (back in the group as a new member with `historyVisible`, F-CVS-03 rule 6a,
+    /// AC-CVS-03-12, frontend-chat 65): earlier messages may load again.
+    func lowerFloor(_ minSeq: Int64) {
+        guard minSeq < floor else { return }
+        floor = max(1, minSeq)
+        hasMoreHistory = true
+    }
+
     /// A loaded message by msgId (quotes, recall).
     func find(msgId: String) -> Message? {
         guard byMsgId.contains(msgId) else { return nil }
@@ -520,9 +622,13 @@ struct LocalChanges {
     var refs: [DeletedRef] = []
     /// A stored row lost text (wipe, cleared quote).
     var wiped = false
+    /// Stored messages below `minSeq` go (F-CVS-03 rule 6 ②), recorded first as pending so a failure is retried on the
+    /// next start.
+    var purges: [(convId: String, minSeq: Int64)] = []
 
     var isEmpty: Bool {
         upsertConvs.isEmpty && deleteConvs.isEmpty && clearMessages.isEmpty && upsertMessages.isEmpty && refs.isEmpty
+            && purges.isEmpty
     }
 }
 
@@ -544,6 +650,11 @@ final class Store {
     private var removedConvs: Set<String> = []
     /// Conversations I was removed from: messages stay in memory for the session, but not on disk.
     private var diskEvicted: Set<String> = []
+    /// Conversations I deleted that have had no new message since (F-CVS-03 rule 2), out of the list: a new message
+    /// brings them back as they were at the deletion (minSeq, read position, notifications off, name).
+    private var hidden: [String: HiddenConv] = [:]
+    /// Waiting for the `convDelete` ack: out of the list (optimistic), back if it fails.
+    private var pendingDelete: Set<String> = []
 
     init(me: @escaping () -> String) {
         self.me = me
@@ -553,17 +664,34 @@ final class Store {
 
     /// Replaces the list with a `convs` result. Returns groups inferred as "removed" (present before, absent now: the
     /// server does not replay removals that happened offline, G-UI-21). No inference when truncated or for c2c.
-    func setConversations(_ list: [ServerConversation], truncated: Bool) -> [String] {
+    /// `deleted` (C5, F-CVS-03 rule 6 ①) are conversations I deleted: they leave the list without a snapshot and are not
+    /// "removed" (AC-CVS-03-5); when `deletedTruncated` that list is incomplete, so nothing is inferred either
+    /// (frontend-chat 54). Purging below minSeq is the caller's (`purgeConversation`).
+    func setConversations(
+        _ list: [ServerConversation], truncated: Bool, deleted: [DeletedConv] = [], deletedTruncated: Bool = false
+    ) -> [String] {
         var next: [String: ConvState] = [:]
         for c in list { next[c.convId] = fromServer(c) }
+        var nextHidden: [String: HiddenConv] = [:]
+        if deletedTruncated {
+            for (id, h) in hidden where next[id] == nil { nextHidden[id] = h }
+        }
+        for d in deleted where next[d.convId] == nil {
+            let old = convs[d.convId] ?? hidden[d.convId]?.conv
+            nextHidden[d.convId] = HiddenConv(clearedSeq: d.clearedSeq, conv: old.map { clearedState($0, d.clearedSeq) })
+        }
         var gone: [String] = []
-        if !truncated {
-            for (id, c) in convs where c.view.type == .group && next[id] == nil && !placeholders.contains(id) {
+        if !truncated && !deletedTruncated {
+            for (id, c) in convs
+            where c.view.type == .group && next[id] == nil && nextHidden[id] == nil && !placeholders.contains(id) {
                 snapshots[id] = ConversationSnapshot(convId: id, type: c.view.type, name: c.view.name)
                 gone.append(id)
                 evictFromDisk(id)
             }
         }
+        // A server minSeq below the local floor happens only after a rejoin counted as a new member (rule 6a). The removal
+        // and the rejoin may both have happened offline (no snapshot, no convRemoved), so the server's value is taken as is.
+        for (id, c) in next { msgs[id]?.lowerFloor(c.view.minSeq) }
         for id in next.keys {
             snapshots[id] = nil
             restoreToDisk(id)
@@ -574,13 +702,92 @@ final class Store {
             removedConvs.remove(id)
         }
         convs = next
+        hidden = nextHidden
         placeholders = []
         self.truncated = truncated
         return gone.sorted(by: bytesLess)
     }
 
+    /// Purges a conversation's local messages below `minSeq` (F-CVS-03 rule 6 ②), memory and database. A conversation
+    /// with nothing loaded gets no list. Returns whether its messages changed.
+    func purgeConversation(_ convId: String, _ minSeq: Int64) -> Bool {
+        msgs[convId]?.purgeBelow(minSeq) ?? false
+    }
+
+    /// The conversation was deleted up to `clearedSeq` (my own `deleteConv` ack, or `convDeleted` from another device,
+    /// frontend-chat 55): minSeq = clearedSeq + 1, readSeq = max(readSeq, clearedSeq), no longer pinned, notifications
+    /// off kept; purged; out of the list unless newer messages are already here (rule 5). Not a removal: no snapshot.
+    /// Returns whether its messages changed.
+    func clearConversation(_ convId: String, _ clearedSeq: Int64) -> Bool {
+        pendingDelete.remove(convId)
+        let prev = hidden[convId]
+        let seq = max(clearedSeq, prev?.clearedSeq ?? 0)
+        if let c = convs[convId] {
+            let next = clearedState(c, seq)
+            if next.view.maxSeq > seq {
+                convs[convId] = next
+                dirtyConvs.insert(convId)
+            } else {
+                convs[convId] = nil
+                hidden[convId] = HiddenConv(clearedSeq: seq, conv: next)
+                placeholders.remove(convId)
+                removedConvs.insert(convId)
+                dirtyConvs.remove(convId)
+            }
+        } else {
+            hidden[convId] = HiddenConv(clearedSeq: seq, conv: prev?.conv.map { clearedState($0, seq) })
+        }
+        // Even with nothing loaded the floor is kept: a late answer must not write cleared messages in.
+        return list(convId).purgeBelow(seq + 1)
+    }
+
+    /// `deleteConv` waits for its ack with the conversation out of the list; `cancelDelete` brings it back.
+    func hideForDelete(_ convId: String) {
+        pendingDelete.insert(convId)
+    }
+
+    func cancelDelete(_ convId: String) -> Bool {
+        pendingDelete.remove(convId) != nil
+    }
+
+    /// Pinned and notifications off of a conversation, a hidden (deleted) one included; nil when unknown.
+    func settings(_ convId: String) -> ConvSettings? {
+        (convs[convId] ?? hidden[convId]?.conv).map { ConvSettings(of: $0.view) }
+    }
+
+    /// Changes pinned / notifications off (local optimistic change, its rollback, or another device's
+    /// `convSettingsChanged`). A hidden conversation keeps it for when it comes back. Returns whether anything changed.
+    func setSettings(_ convId: String, _ s: ConvSettings) -> Bool {
+        if var c = convs[convId] {
+            guard ConvSettings(of: c.view) != s else { return false }
+            s.apply(to: &c.view)
+            convs[convId] = c
+            dirtyConvs.insert(convId)
+            return true
+        }
+        guard var h = hidden[convId], var c = h.conv, ConvSettings(of: c.view) != s else { return false }
+        s.apply(to: &c.view)
+        h.conv = c
+        hidden[convId] = h
+        return true
+    }
+
+    /// The `convSet` ack (13.1: the ack's conv wins). A hidden conversation only takes the settings and stays hidden;
+    /// when newer messages are already here, only the settings are taken and the rest waits for the next `convs`.
+    func applyConvAck(_ conv: ServerConversation) {
+        let c = convs[conv.convId]
+        if (c == nil && hidden[conv.convId] != nil) || (c.map { $0.view.maxSeq > conv.maxSeq } ?? false) {
+            _ = setSettings(conv.convId, ConvSettings(of: conv))
+            return
+        }
+        upsertConversation(conv)
+    }
+
+    /// The server's whole conversation (convAdded, a convSet ack): a lower minSeq lowers the local floor (rule 6a).
     func upsertConversation(_ c: ServerConversation) {
+        msgs[c.convId]?.lowerFloor(c.minSeq)
         convs[c.convId] = fromServer(c)
+        hidden[c.convId] = nil
         dirtyConvs.insert(c.convId)
         removedConvs.remove(c.convId)
         placeholders.remove(c.convId)
@@ -598,6 +805,7 @@ final class Store {
             name: c?.name ?? String(convId[colon...]),
             reason: reason)
         convs[convId] = nil
+        hidden[convId] = nil
         removedConvs.insert(convId)
         dirtyConvs.remove(convId)
         evictFromDisk(convId)
@@ -622,14 +830,14 @@ final class Store {
         convs[convId]?.view
     }
 
-    /// By updatedAt descending, then convId ascending (same as the server). Values are immutable: unchanged
+    /// Pinned first by pinnedAt descending, the rest by updatedAt descending, then convId ascending (F-CVS-01 rule 3,
+    /// same as the server). A conversation waiting for its `convDelete` ack is left out. Values are immutable: unchanged
     /// conversations compare equal, so the UI can diff with `==` (G-UI-19).
     func conversations() -> [Conversation] {
         convs.values
+            .filter { !pendingDelete.contains($0.view.convId) }
             .map(\.view)
-            .sorted { a, b in
-                a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : bytesLess(a.convId, b.convId)
-            }
+            .sorted(by: convOrder)
     }
 
     private func fromServer(_ c: ServerConversation) -> ConvState {
@@ -642,10 +850,11 @@ final class Store {
                 last = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts, recall: recall)
             }
         }
-        let view = Conversation(
+        var view = Conversation(
             convId: c.convId, type: c.type, name: c.name, maxSeq: c.maxSeq, readSeq: c.readSeq, minSeq: c.minSeq,
             unread: c.unread, lastMsg: last, updatedAt: c.updatedAt, memberCount: c.memberCount, myRole: c.myRole,
             modVer: c.modVer, mentionUnread: c.mentionUnread, firstMentionSeq: c.firstMentionSeq)
+        ConvSettings(of: c).apply(to: &view)
         // Not loaded yet: what loads later is at least this version, so it is the baseline. Loaded: keep the old value
         // until a re-sync succeeds.
         let loaded = (msgs[c.convId]?.oldestSeq ?? 0) > 0
@@ -730,7 +939,7 @@ final class Store {
     }
 
     private func recount(_ c: inout ConvState) {
-        c.view.unread = max(0, c.view.maxSeq - max(c.readBase, c.view.readSeq))
+        c.view.unread = unreadOf(c)
     }
 
     // MARK: Messages
@@ -849,8 +1058,22 @@ final class Store {
         return true
     }
 
-    /// First message of a conversation not in the list: a stand-in until `convs` replaces it.
+    /// First message of a conversation not in the list: a stand-in until `convs` replaces it. A conversation I deleted
+    /// comes back as it was at the deletion, counting only the new messages as unread, minSeq = clearedSeq + 1 (F-CVS-03
+    /// rule 3, AC-CVS-03-2).
     private func newConversation(_ m: ServerMessage) -> ConvState {
+        if let h = hidden.removeValue(forKey: m.convId) {
+            var base = h.conv ?? bareConversation(m)
+            if h.conv == nil { base.view.maxSeq = h.clearedSeq }
+            placeholders.insert(m.convId)
+            return clearedState(base, h.clearedSeq)
+        }
+        let c = bareConversation(m)
+        placeholders.insert(m.convId)
+        return c
+    }
+
+    private func bareConversation(_ m: ServerMessage) -> ConvState {
         let parts = m.convId.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         let type = parts.first ?? "c2c"
         let a = parts.count > 1 ? parts[1] : ""
@@ -859,7 +1082,6 @@ final class Store {
             convId: m.convId, type: ConvType(rawValue: type),
             name: type == "c2c" ? (a == me() ? b : a) : a,
             maxSeq: 0, readSeq: 0, minSeq: 1, unread: 0, lastMsg: nil, updatedAt: 0, memberCount: nil, myRole: nil)
-        placeholders.insert(m.convId)
         return ConvState(view: view, readBase: 0)
     }
 
@@ -882,6 +1104,10 @@ final class Store {
             if l.clearedOnDisk {
                 out.clearMessages.append(id)
                 l.clearedOnDisk = false
+            }
+            if let p = l.purgeOnDisk {
+                out.purges.append((id, p))
+                l.purgeOnDisk = nil
             }
             guard !l.dirtySeqs.isEmpty else { continue }
             if !diskEvicted.contains(id) {
@@ -912,6 +1138,47 @@ final class Store {
     func pendingCount() -> Int {
         msgs.values.reduce(0) { $0 + $1.unsentCount }
     }
+}
+
+/// A conversation I deleted with no new message since (F-CVS-03 rule 2).
+struct HiddenConv {
+    var clearedSeq: Int64
+    /// The local conversation at the deletion (already `clearedState`); nil when only `convs.deleted` named it.
+    var conv: ConvState?
+}
+
+private func unreadOf(_ c: ConvState) -> Int64 {
+    max(0, c.view.maxSeq - max(c.readBase, c.view.readSeq))
+}
+
+/// A conversation after a deletion up to `clearedSeq` (frontend-chat 55), without changing the original.
+private func clearedState(_ c: ConvState, _ clearedSeq: Int64) -> ConvState {
+    var n = c
+    n.view.minSeq = max(n.view.minSeq, clearedSeq + 1)
+    n.view.readSeq = max(n.view.readSeq, clearedSeq)
+    if n.view.maxSeq <= clearedSeq {
+        n.view.lastMsg = nil  // The summary was a cleared message: its text goes too.
+    }
+    n.view.maxSeq = max(n.view.maxSeq, clearedSeq)
+    n.view.pinned = nil
+    n.view.pinnedAt = nil
+    // Mentions inside the cleared range are read: with everything read the count is 0; with newer messages only the next
+    // `convs` knows (frontend-chat 64).
+    let allRead = n.view.readSeq >= n.view.maxSeq
+    if allRead || (n.view.firstMentionSeq.map { $0 <= clearedSeq } ?? false) {
+        n.view.firstMentionSeq = nil
+        if allRead, n.view.mentionUnread != nil { n.view.mentionUnread = 0 }
+    }
+    n.view.unread = unreadOf(n)
+    return n
+}
+
+/// F-CVS-01 rule 3, as the server's `convListOrder`: pinned first by pinnedAt descending, then updatedAt descending, then
+/// convId ascending (two pins with the same pinnedAt fall back to updatedAt, like the rest).
+private func convOrder(_ a: Conversation, _ b: Conversation) -> Bool {
+    if a.isPinned != b.isPinned { return a.isPinned }
+    if a.isPinned, a.pinnedAt != b.pinnedAt { return (a.pinnedAt ?? 0) > (b.pinnedAt ?? 0) }
+    return a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : bytesLess(a.convId, b.convId)
 }
 
 /// A copy of what is in memory (AC-ADM-31-3). Never contains the token.
