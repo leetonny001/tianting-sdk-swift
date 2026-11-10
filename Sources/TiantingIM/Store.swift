@@ -52,14 +52,21 @@ public struct Message: Sendable, Hashable, Codable {
     public var ts: Int64
     public var status: MessageStatus
     public var error: SendFailure?
-    /// Deleted (PRD-admin F-ADM-31): seq, msgId, sender and time stay, the body is empty.
+    /// Deleted (PRD-admin F-ADM-31) or recalled: seq, msgId, sender and time stay, the body is empty.
     public var deleted: Bool?
     public var deletedAt: Int64?
-    /// The error code's reason, e.g. 4290's `uploadPendingLimit`.
+    /// The error code's reason, e.g. 4290's `uploadPendingLimit`, 4040's `quoteUnavailable`.
     public var errorReason: String? = nil
+    /// Recalled (PRD-chat F-RCL-01 rule 5a): `deleted` is true too. The notice comes from `recallNotice` / `recallText`.
+    public var recalled: Bool? = nil
+    public var recalledAt: Int64? = nil
+    /// Who recalled it; nil on older servers or when this device cannot tell.
+    public var recalledBy: String? = nil
 
     /// An image or file message (C2).
     public var isAttachment: Bool { type == .image || type == .file }
+    public var isDeleted: Bool { deleted == true }
+    public var isRecalled: Bool { recalled == true }
 }
 
 /// One conversation as the UI sees it.
@@ -79,6 +86,18 @@ public struct Conversation: Sendable, Hashable, Codable {
     public var myRole: GroupRole?
     /// How existing messages look, versioned (F-RCL-03 rule 2); nil on older servers.
     public var modVer: Int64? = nil
+    /// Unread messages mentioning me (F-MEN-03 rule 1): above 0 the list summary starts with "[有人@我]". nil when the
+    /// server did not send it (feature off, older server).
+    public var mentionUnread: Int64? = nil
+    /// The first unread seq mentioning me (the "有人@我" jump button).
+    public var firstMentionSeq: Int64? = nil
+}
+
+/// What is known about a recall (msgDeleted's `recalled`, or sync's recalled, recalledBy, recalledAt). An empty `by`
+/// means unknown.
+struct RecallInfo: Sendable, Hashable, Codable {
+    var by: String
+    var at: Int64?
 }
 
 /// What is kept after being removed from a group (PRD-ui G-UI-21): the conversation leaves the list but the chat
@@ -103,9 +122,55 @@ struct ConvState: Sendable, Hashable, Codable {
 
 private let summaryLength = 100
 
-/// The summary of a deleted last message: keeps no text.
-private func deletedLast(msgId: String, from: String, type: String, ts: Int64) -> LastMsg {
-    LastMsg(msgId: msgId, from: from, type: type, text: nil, ts: ts, deleted: true)
+/// The summary of a deleted last message: keeps no text. A recall carries recalled and recalledBy (F-RCL-03 rule 4).
+private func deletedLast(msgId: String, from: String, type: String, ts: Int64, recall: RecallInfo? = nil) -> LastMsg {
+    LastMsg(
+        msgId: msgId, from: from, type: type, text: nil, ts: ts, deleted: true, recalled: recall != nil ? true : nil,
+        recalledBy: recall.flatMap { $0.by.isEmpty ? nil : $0.by })
+}
+
+private func recallOf(_ m: ServerMessage) -> RecallInfo? {
+    m.recalled == true ? RecallInfo(by: m.recalledBy ?? "", at: m.recalledAt) : nil
+}
+
+/// A quote with its original cleared (F-QUO-02 rule 4): only msgId, seq, from, type and the new state stay.
+private func clearedQuote(_ q: QuoteView, _ state: QuoteState) -> QuoteView {
+    var q = q
+    q.state = state
+    q.text = nil
+    return q
+}
+
+private func withRecall(_ m: Message, _ r: RecallInfo) -> Message {
+    var m = m
+    m.recalled = true
+    if !r.by.isEmpty { m.recalledBy = r.by }
+    if let at = r.at { m.recalledAt = at }
+    return m
+}
+
+/// One persisted reference (the `deleted_refs` table): a deleted msgId or seq, or a recall.
+struct DeletedRef: Sendable, Hashable {
+    var convId: String
+    /// "id", "seq" or "recalled".
+    var kind: String
+    var ref: String
+}
+
+/// `deleted_refs` kind "recalled": JSON {k: "id" | "seq", v, by, at?} (msgIds may contain colons, so no separators).
+struct RecalledRef: Codable {
+    var k: String
+    var v: String
+    var by: String
+    var at: Int64?
+}
+
+/// What `deleted_refs` held for one conversation.
+struct StoredRefs {
+    var ids: Set<String> = []
+    var seqs: Set<Int64> = []
+    var recalledIds: [String: RecallInfo] = [:]
+    var recalledSeqs: [Int64: RecallInfo] = [:]
 }
 
 /// Marks a body expired; the file name is cleared, as the server does (F-FILE-06 rule 3).
@@ -138,11 +203,17 @@ final class MessageList {
     private var deletedSeqs: Set<Int64> = []
     // Failed messages the user removed (G-UI-14). They may have reached the server: later acks and syncs stay out.
     private var removedClient: Set<String> = []
+    // Of those, the ones known to be recalls, with what is known (F-RCL-03 rule 2a: recalled only goes false -> true,
+    // across cold starts too).
+    private var recalledIds: [String: RecallInfo] = [:]
+    private var recalledSeqs: [Int64: RecallInfo] = [:]
     // Messages whose file is known expired (F-FILE-06 rule 3): `expired` only goes false -> true, a late old sync
     // cannot turn it back (F-RCL-03 rule 2a).
     private var expiredIds: Set<String> = []
     /// File ids that just expired or whose message was deleted in a merge; the client takes them to clear caches.
     var newlyExpired: [String] = []
+    /// The part of `newlyExpired` that went because of a recall (a running download says "recalled", AC-RCL-03-12).
+    var newlyRecalled: Set<String> = []
 
     /// The earliest loaded seq (for paging back); 0 when nothing is loaded.
     var oldestSeq: Int64 = 0
@@ -156,26 +227,44 @@ final class MessageList {
     // Local database bookkeeping: what `Store.drainChanges` still has to write.
     fileprivate var dirtySeqs: Set<Int64> = []
     fileprivate var clearedOnDisk = false
+    /// New `deleted_refs` rows.
+    fileprivate var newRefs: [(kind: String, ref: String)] = []
+    /// Text left a stored row (a wipe, a cleared quote): without secure_delete the file needs a VACUUM.
+    fileprivate var wipedOnDisk = false
 
     /// Merges a server message: dedupes by msgId, merges a pending local message by clientMsgId. Existing messages
-    /// merge monotonically (F-RCL-03 rule 2a): `deleted` and a file's `expired` only go false -> true, deletedIds win;
-    /// a late old sync carrying text or `expired == false` writes nothing back. Returns the merged message, or nil when
-    /// nothing changed.
+    /// merge monotonically (F-RCL-03 rule 2a): `deleted`, `recalled` and a file's `expired` only go false -> true,
+    /// deletedIds win; `quote.state` only moves on from `normal` and a cleared `quote.text` never comes back. A late old
+    /// sync carrying text, `expired == false`, `deleted == false` or a `normal` quote writes nothing back. Returns the
+    /// merged message, or nil when nothing changed.
     func addServer(_ m: ServerMessage) -> Message? {
         if removedClient.contains(m.clientMsgId) { return nil }
         touched = true
         let deleted = m.deleted == true || isDeleted(msgId: m.msgId, seq: m.seq)
+        let recall = recallOf(m) ?? recallInfo(msgId: m.msgId, seq: m.seq)
         if byMsgId.contains(m.msgId) {
-            guard let old = bySeq[m.seq], old.deleted != true else { return nil }
-            if deleted { return wipe(old, deletedAt: m.deletedAt) }
+            guard let old = bySeq[m.seq] else { return nil }
+            if old.deleted == true {
+                // Deleted already: only "console delete -> recall" can be added (recalled false -> true), no text.
+                guard let recall, old.recalled != true else { return nil }
+                return replace(old, withRecall(old, recall), wiped: true)
+            }
+            if deleted { return wipe(old, deletedAt: m.deletedAt, recall: recall) }
+            var body = old.body
             if m.body?.fileExpired == true, !old.body.fileExpired {
                 expiredIds.insert(m.msgId)
-                var next = old
-                next.body = expire(old.body)
+                body = expire(body)
                 noteExpired(old.body)
-                return replace(old, next)
             }
-            return nil
+            var cleared = false
+            if let q = old.body.quote, q.state == .normal, let nq = m.body?.quote, nq.state != .normal {
+                body.quote = clearedQuote(q, nq.state)
+                cleared = true
+            }
+            guard body != old.body else { return nil }
+            var next = old
+            next.body = body
+            return replace(old, next, wiped: cleared)
         }
         if let local = byClient[m.clientMsgId], local.seq == nil, local.from == m.from {
             unsent.removeAll { $0.clientMsgId == local.clientMsgId }
@@ -186,10 +275,16 @@ final class MessageList {
             expiredIds.insert(m.msgId)
             body = expire(body)
         }
-        let msg = Message(
+        // The quoted message is known recalled or deleted: this answer may predate that, so the quoted text stays out
+        // (AC-RCL-03-13).
+        if let q = body.quote, q.state == .normal, let gone = goneState(msgId: q.msgId, seq: q.seq) {
+            body.quote = clearedQuote(q, gone)
+        }
+        var msg = Message(
             clientMsgId: m.clientMsgId, msgId: m.msgId, seq: m.seq, convId: m.convId, from: m.from, type: m.type,
             body: deleted ? MsgBody() : body, ts: m.ts, status: .sent, error: nil,
             deleted: deleted ? true : nil, deletedAt: m.deletedAt)
+        if deleted, let recall { msg = withRecall(msg, recall) }
         insert(msg, seq: m.seq)
         return msg
     }
@@ -203,12 +298,14 @@ final class MessageList {
         if msg.body.fileExpired, let id = msg.msgId { expiredIds.insert(id) }
     }
 
-    private func replace(_ old: Message, _ next: Message) -> Message {
+    /// Replaces a message. `wiped`: text (body, quote) left it, so the stored copy must be scrubbed from the file.
+    private func replace(_ old: Message, _ next: Message, wiped: Bool = false) -> Message {
         if let seq = old.seq {
             bySeq[seq] = next
             dirtySeqs.insert(seq)
         }
         byClient[old.clientMsgId] = next
+        if wiped { wipedOnDisk = true }
         return next
     }
 
@@ -235,30 +332,88 @@ final class MessageList {
         return false
     }
 
-    /// Records deleted messages and wipes loaded text. Returns whether any message changed.
-    func markDeleted(msgIds: [String], seqs: [Int64]) -> Bool {
-        deletedIds.formUnion(msgIds)
-        deletedSeqs.formUnion(seqs)
+    /// What is known about a recall of this message; nil for console deletions and unknown messages.
+    func recallInfo(msgId: String, seq: Int64? = nil) -> RecallInfo? {
+        if let r = recalledIds[msgId] { return r }
+        if let seq { return recalledSeqs[seq] }
+        return nil
+    }
+
+    /// The state a quote of this message should have: `.recalled` when known recalled, `.deleted` when known deleted.
+    private func goneState(msgId: String, seq: Int64?) -> QuoteState? {
+        guard isDeleted(msgId: msgId, seq: seq) else { return nil }
+        return recallInfo(msgId: msgId, seq: seq) != nil ? .recalled : .deleted
+    }
+
+    /// Records deleted messages (a recall when `recall` is set) and wipes loaded text; messages here quoting them (pending
+    /// ones too) lose the quoted text and get `.recalled` or `.deleted` (F-QUO-02 rule 4). Recall info only grows: a later
+    /// console deletion does not undo a known recall. Returns whether any message changed.
+    func markDeleted(msgIds: [String], seqs: [Int64], recall: RecallInfo? = nil) -> Bool {
+        for id in msgIds where deletedIds.insert(id).inserted { newRefs.append(("id", id)) }
+        for s in seqs where deletedSeqs.insert(s).inserted { newRefs.append(("seq", String(s))) }
+        if let recall {
+            for id in msgIds where recalledIds[id] == nil {
+                recalledIds[id] = recall
+                newRefs.append(("recalled", recalledRef("id", id, recall)))
+            }
+            for s in seqs where recalledSeqs[s] == nil {
+                recalledSeqs[s] = recall
+                newRefs.append(("recalled", recalledRef("seq", String(s), recall)))
+            }
+        }
         var changed = false
-        for m in Array(bySeq.values) where m.deleted != true && isDeleted(msgId: m.msgId ?? "", seq: m.seq) {
-            _ = wipe(m, deletedAt: nil)
+        for m in Array(bySeq.values) where isDeleted(msgId: m.msgId ?? "", seq: m.seq) {
+            let r = recallInfo(msgId: m.msgId ?? "", seq: m.seq)
+            if m.deleted != true {
+                _ = wipe(m, deletedAt: nil, recall: r)
+                changed = true
+            } else if let r, m.recalled != true {
+                _ = replace(m, withRecall(m, r), wiped: true)
+                changed = true
+            }
+        }
+        for m in Array(bySeq.values) + unsent {
+            guard let q = m.body.quote, q.state == .normal, let gone = goneState(msgId: q.msgId, seq: q.seq) else { continue }
+            var next = m
+            next.body.quote = clearedQuote(q, gone)
+            if m.seq != nil {
+                _ = replace(m, next, wiped: true)
+            } else {
+                update(m.clientMsgId) { $0.body = next.body }
+            }
             changed = true
         }
         return changed
     }
 
-    private func wipe(_ old: Message, deletedAt: Int64?) -> Message {
+    private func recalledRef(_ k: String, _ v: String, _ r: RecallInfo) -> String {
+        let data = (try? JSONCoding.encoder.encode(RecalledRef(k: k, v: v, by: r.by, at: r.at))) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Puts persisted references back on a cold start.
+    func restoreRefs(_ r: StoredRefs) {
+        deletedIds.formUnion(r.ids)
+        deletedSeqs.formUnion(r.seqs)
+        recalledIds.merge(r.recalledIds) { a, _ in a }
+        recalledSeqs.merge(r.recalledSeqs) { a, _ in a }
+    }
+
+    /// A loaded message by msgId (quotes, recall).
+    func find(msgId: String) -> Message? {
+        guard byMsgId.contains(msgId) else { return nil }
+        return bySeq.values.first { $0.msgId == msgId }
+    }
+
+    private func wipe(_ old: Message, deletedAt: Int64?, recall: RecallInfo? = nil) -> Message {
         noteExpired(old.body)  // The file's caches go too (F-RCL-03 rule 3).
+        if recall != nil, let id = old.body.fileId { newlyRecalled.insert(id) }
         var next = old
         next.body = MsgBody()
         next.deleted = true
         if let deletedAt { next.deletedAt = deletedAt }
-        if let seq = old.seq {
-            bySeq[seq] = next
-            dirtySeqs.insert(seq)
-        }
-        byClient[old.clientMsgId] = next
-        return next
+        if let recall { next = withRecall(next, recall) }
+        return replace(old, next, wiped: true)
     }
 
     /// Whether local messages without a seq exist: one of them may be what the server already stored.
@@ -361,9 +516,13 @@ struct LocalChanges {
     /// Conversations whose stored messages are all deleted (removed from a group, gap reset).
     var clearMessages: [String] = []
     var upsertMessages: [Message] = []
+    /// New `deleted_refs` rows (deleted msgIds and seqs, recalls).
+    var refs: [DeletedRef] = []
+    /// A stored row lost text (wipe, cleared quote).
+    var wiped = false
 
     var isEmpty: Bool {
-        upsertConvs.isEmpty && deleteConvs.isEmpty && clearMessages.isEmpty && upsertMessages.isEmpty
+        upsertConvs.isEmpty && deleteConvs.isEmpty && clearMessages.isEmpty && upsertMessages.isEmpty && refs.isEmpty
     }
 }
 
@@ -474,15 +633,19 @@ final class Store {
     }
 
     private func fromServer(_ c: ServerConversation) -> ConvState {
-        // This `convs` may predate a deletion: a known-deleted last message must not bring its text back.
+        // This `convs` may predate a deletion: a known-deleted last message must not bring its text back, and a known
+        // recall stays a recall in the summary (false -> true only).
         var last = c.lastMsg
-        if let l = last, l.deleted != true, msgs[c.convId]?.isDeleted(msgId: l.msgId) == true {
-            last = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts)
+        if let l = last, let list = msgs[c.convId], list.isDeleted(msgId: l.msgId), l.deleted != true || l.recalled != true {
+            let recall = list.recallInfo(msgId: l.msgId)
+            if l.deleted != true || recall != nil {
+                last = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts, recall: recall)
+            }
         }
         let view = Conversation(
             convId: c.convId, type: c.type, name: c.name, maxSeq: c.maxSeq, readSeq: c.readSeq, minSeq: c.minSeq,
             unread: c.unread, lastMsg: last, updatedAt: c.updatedAt, memberCount: c.memberCount, myRole: c.myRole,
-            modVer: c.modVer)
+            modVer: c.modVer, mentionUnread: c.mentionUnread, firstMentionSeq: c.firstMentionSeq)
         // Not loaded yet: what loads later is at least this version, so it is the baseline. Loaded: keep the old value
         // until a re-sync succeeds.
         let loaded = (msgs[c.convId]?.oldestSeq ?? 0) > 0
@@ -501,6 +664,16 @@ final class Store {
         c.checkedModVer = modVer
         convs[convId] = c
         dirtyConvs.insert(convId)
+    }
+
+    /// Takes the file ids that went because of a recall (call before `takeExpiredFiles`).
+    func takeRecalledFiles() -> Set<String> {
+        var out: Set<String> = []
+        for l in msgs.values where !l.newlyRecalled.isEmpty {
+            out.formUnion(l.newlyRecalled)
+            l.newlyRecalled = []
+        }
+        return out
     }
 
     /// Takes the file ids that expired or whose message was deleted in a merge: the caller clears URL and file caches
@@ -534,11 +707,37 @@ final class Store {
         return true
     }
 
+    /// Read up to the newest on this device: mentions of me clear too (F-MEN-03 rule 1), the jump button goes.
+    func clearMentions(_ convId: String) -> Bool {
+        guard var c = convs[convId], (c.view.mentionUnread ?? 0) > 0, c.view.readSeq >= c.view.maxSeq else { return false }
+        c.view.mentionUnread = 0
+        c.view.firstMentionSeq = nil
+        convs[convId] = c
+        dirtyConvs.insert(convId)
+        return true
+    }
+
+    /// A live unread message mentioning me: +1 locally, the next `convs` decides (AC-MEN-01-1). Conversations the server
+    /// never gave a count for are not guessed.
+    func bumpMention(_ convId: String, seq: Int64) -> Bool {
+        guard var c = convs[convId], let n = c.view.mentionUnread, seq > c.view.readSeq else { return false }
+        c.view.mentionUnread = n + 1
+        let first = c.view.firstMentionSeq ?? 0
+        if first == 0 || seq < first { c.view.firstMentionSeq = seq }
+        convs[convId] = c
+        dirtyConvs.insert(convId)
+        return true
+    }
+
     private func recount(_ c: inout ConvState) {
         c.view.unread = max(0, c.view.maxSeq - max(c.readBase, c.view.readSeq))
     }
 
     // MARK: Messages
+
+    func existingList(_ convId: String) -> MessageList? {
+        msgs[convId]
+    }
 
     func list(_ convId: String) -> MessageList {
         if let l = msgs[convId] { return l }
@@ -566,17 +765,20 @@ final class Store {
         bumpMax(m.convId, m.seq)
         guard let merged else { return false }
         var c = convs[m.convId] ?? newConversation(m)
+        let recall = merged.recalled == true ? RecallInfo(by: merged.recalledBy ?? "") : nil
         if m.seq > c.view.maxSeq {
             c.view.maxSeq = m.seq
             c.view.lastMsg =
                 merged.deleted == true
-                ? deletedLast(msgId: m.msgId, from: m.from, type: m.type.rawValue, ts: m.ts)
+                ? deletedLast(msgId: m.msgId, from: m.from, type: m.type.rawValue, ts: m.ts, recall: recall)
                 : LastMsg(
                     msgId: m.msgId, from: m.from, type: m.type.rawValue, text: summary(merged.body.text ?? ""),
                     ts: m.ts)
             c.view.updatedAt = max(c.view.updatedAt, m.ts)
-        } else if merged.deleted == true, let l = c.view.lastMsg, l.msgId == m.msgId {
-            c.view.lastMsg = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts)
+        } else if merged.deleted == true, let l = c.view.lastMsg, l.msgId == m.msgId,
+            l.deleted != true || (recall != nil && l.recalled != true)
+        {
+            c.view.lastMsg = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts, recall: recall)
         }
         if m.from == me() { c.view.readSeq = max(c.view.readSeq, m.seq) }
         recount(&c)
@@ -586,15 +788,16 @@ final class Store {
         return true
     }
 
-    /// A deletion (msgDeleted, or `lastMsg.deleted` from convs): wipes the text and turns the summary into a
-    /// placeholder. Seqs keep no holes and unread does not change (C-02). Messages not loaded yet are remembered,
-    /// so a later sync or ack cannot write their text back. Returns whether loaded messages changed.
-    func deleteMessages(convId: String, msgIds: [String], seqs: [Int64]) -> Bool {
-        let changed = list(convId).markDeleted(msgIds: msgIds, seqs: seqs)
-        if var c = convs[convId], let l = c.view.lastMsg, l.deleted != true,
-            msgIds.contains(l.msgId) || seqs.contains(c.view.maxSeq)
+    /// A deletion or recall (msgDeleted, or `lastMsg.deleted` from convs): wipes the text and the quoted copies of it,
+    /// turns the summary into a placeholder. Seqs keep no holes, unread and updatedAt do not change (C-02, F-RCL-01 rule
+    /// 6). `recall` set means a recall. Messages not loaded yet are remembered, so a later sync or ack cannot write their
+    /// text back. Returns whether loaded messages changed.
+    func deleteMessages(convId: String, msgIds: [String], seqs: [Int64], recall: RecallInfo? = nil) -> Bool {
+        let changed = list(convId).markDeleted(msgIds: msgIds, seqs: seqs, recall: recall)
+        if var c = convs[convId], let l = c.view.lastMsg, msgIds.contains(l.msgId) || seqs.contains(c.view.maxSeq),
+            l.deleted != true || (recall != nil && l.recalled != true)
         {
-            c.view.lastMsg = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts)
+            c.view.lastMsg = deletedLast(msgId: l.msgId, from: l.from, type: l.type, ts: l.ts, recall: recall)
             convs[convId] = c
             dirtyConvs.insert(convId)
         }
@@ -670,6 +873,12 @@ final class Store {
         dirtyConvs = []
         removedConvs = []
         for (id, l) in msgs {
+            out.refs += l.newRefs.map { DeletedRef(convId: id, kind: $0.kind, ref: $0.ref) }
+            l.newRefs = []
+            if l.wipedOnDisk {
+                out.wiped = true
+                l.wipedOnDisk = false
+            }
             if l.clearedOnDisk {
                 out.clearMessages.append(id)
                 l.clearedOnDisk = false
@@ -684,7 +893,8 @@ final class Store {
     }
 
     /// Fills the store from the local database on startup.
-    func restore(convStates: [ConvState], messages: [Message]) {
+    func restore(convStates: [ConvState], messages: [Message], refs: [String: StoredRefs] = [:]) {
+        for (id, r) in refs { list(id).restoreRefs(r) }
         for c in convStates { convs[c.view.convId] = c }
         for m in messages {
             list(m.convId).restore(m)

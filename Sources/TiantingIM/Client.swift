@@ -96,6 +96,21 @@ public enum IMEvent: Sendable {
     /// These files expired or their message was deleted (F-FILE-06 rule 3, AC-FILE-06-12): the SDK already dropped their
     /// URLs and its cached downloads; the app drops anything it cached by fileId + variant.
     case filesExpired([String])
+    /// A running download stopped because its message was recalled (`recalled == true`, AC-RCL-03-12: say "该消息已被撤回")
+    /// or deleted or its file expired (false). The partial file is gone and `download` throws `DownloadAbortedError`.
+    case downloadAborted(fileId: String, recalled: Bool)
+}
+
+/// A download stopped midway because its message was recalled (`recalled`) or deleted or expired; the partial file is
+/// deleted (AC-RCL-03-12).
+public struct DownloadAbortedError: Error, Sendable, Equatable {
+    public let fileId: String
+    public let recalled: Bool
+}
+
+/// A call the SDK refuses before anything is queued, e.g. `mentions` in a c2c conversation.
+public struct IMArgumentError: Error, Sendable, Equatable, CustomStringConvertible {
+    public let description: String
 }
 
 public struct SecurityNotice: Sendable, Equatable {
@@ -204,6 +219,11 @@ public final class IMClient {
     private var bannerShown = false
     private var refreshTimer: TimerHandle?
     private var lastRefreshAt: Int64 = Int64.min / 2
+    /// The mention-count refresh (F-MEN-03 rule 1): when convs was last fetched for it, and the deferred one.
+    var mentionFetchAt: Int64 = Int64.min / 2
+    var mentionTimer: TimerHandle?
+    /// Running downloads by fileId, so a recall, deletion or expiry can stop them (AC-RCL-03-12).
+    var downloads: [String: [ObjectIdentifier: DownloadHandle]] = [:]
     var serverOffset: Int64 = 0  // server time minus local time (auth ack's serverTime)
     private var mutes = MuteTable()
     private var lastMutes = MuteTable()
@@ -405,7 +425,13 @@ public final class IMClient {
     /// Sends text: inserts a local "sending" message ("queued" when offline), which becomes "sent" on ack.
     /// Empty or too-long text is not sent. Throws `IMConnectionError.notConnected` before the user is known, and
     /// `ConvIdError` for a malformed conversation id.
-    public func send(_ convId: String, _ raw: String) throws -> SendResult {
+    ///
+    /// C4 (PRD-chat 13.1): `quote` quotes a sent message (F-QUO-01); only its msgId goes up, and the pending bubble builds
+    /// the quote bar from the loaded original. `mentions` are the @-mentioned (F-MEN-01, 02), group chats only: a c2c
+    /// conversation throws `IMArgumentError`; ids are deduplicated, and nothing goes up when they are all empty and `all` is
+    /// false. The "@昵称 " in the text is the app's (profile nickname, not the remark, R-CF-03). 4040 (`errorReason ==
+    /// "quoteUnavailable"`), 4293 (@all used up) and 4131 fail the message like other codes, with no automatic resend.
+    public func send(_ convId: String, _ raw: String, quote: QuoteRef? = nil, mentions: Mentions? = nil) throws -> SendResult {
         let text: String
         switch checkText(raw) {
         case .empty: return .empty
@@ -413,10 +439,14 @@ public final class IMClient {
         case .ok(let t): text = t
         }
         guard !me.isEmpty else { throw IMConnectionError.notConnected }  // Must know who I am.
-        _ = try parseConvId(convId, me: me)
+        let parsed = try parseConvId(convId, me: me)
+        let men = mentions?.normalized
+        if men != nil, parsed.convType != .group {
+            throw IMArgumentError(description: "mentions are only allowed in group conversations")
+        }
         let msg = Message(
             clientMsgId: newId(), msgId: nil, seq: nil, convId: convId, from: me, type: .text,
-            body: MsgBody(text: text), ts: clock.now(),
+            body: MsgBody(text: text, quote: quote.map { localQuote(convId, $0.msgId) }, mentions: men), ts: clock.now(),
             status: conn.state == .connected ? .sending : .queued, error: nil, deleted: nil, deletedAt: nil)
         store.list(convId).addLocal(msg)
         emitMessages(convId)
@@ -730,9 +760,29 @@ public final class IMClient {
     }
     private struct GroupChangedEvent: Decodable { var groupId: String }
     private struct MsgDeletedEvent: Decodable {
+        struct Recalled: Decodable {
+            var by: String?
+            var at: Int64?
+            private enum CodingKeys: String, CodingKey { case by, at }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                by = c.value(.by, default: nil)
+                at = c.value(.at, default: nil)
+            }
+        }
         var convId: String
         var msgIds: [String]?
         var seqs: [Int64]?
+        /// Present for a recall (C4); a console deletion has none.
+        var recalled: Recalled?
+        private enum CodingKeys: String, CodingKey { case convId, msgIds, seqs, recalled }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            convId = try c.decode(String.self, forKey: .convId)
+            msgIds = try c.decodeIfPresent([String].self, forKey: .msgIds)
+            seqs = try c.decodeIfPresent([Int64].self, forKey: .seqs)
+            recalled = c.value(.recalled, default: nil)
+        }
     }
     private struct MutedEvent: Decodable {
         var scope: String?
@@ -780,12 +830,16 @@ public final class IMClient {
             emit(.convRemoved(convId: ev.convId, reason: ev.reason))
         case "readUpdated":
             let ev = try decodeFrameData(ReadUpdatedEvent.self, from: raw)
+            // Read on another device: the mention count cannot be worked out here (how many mentions lie on each side of
+            // the read position), so a conversation with mentions fetches convs again (F-MEN-03 rule 1).
+            if hasMentions(ev.convId) { refreshMentions() }
             if store.advanceRead(ev.convId, ev.readSeq) { emitConversations() }
         case "groupChanged":
             onGroupChanged(try decodeFrameData(GroupChangedEvent.self, from: raw).groupId)
         case "msgDeleted":
             let ev = try decodeFrameData(MsgDeletedEvent.self, from: raw)
-            onMsgDeleted(ev.convId, msgIds: ev.msgIds ?? [], seqs: ev.seqs ?? [])
+            let recall = ev.recalled.map { RecallInfo(by: $0.by ?? "", at: $0.at) }
+            onMsgDeleted(ev.convId, msgIds: ev.msgIds ?? [], seqs: ev.seqs ?? [], recall: recall)
         case "muted":
             let ev = try decodeFrameData(MutedEvent.self, from: raw)
             guard let until = ev.mutedUntil else { return }
@@ -807,14 +861,16 @@ public final class IMClient {
         }
     }
 
-    /// A deletion (PRD-admin F-ADM-31): wipes the text from memory and disk, turns the summary into a placeholder,
-    /// leaves unread alone. If unconfirmed local messages exist (timed out, ack lost), the deleted one may be among
-    /// them; the event only has msgId and seq, so pull from the server to match by clientMsgId and clear the queued
+    /// A deletion (PRD-admin F-ADM-31) or recall (`recall` set, PRD-chat F-RCL-03 rule 1): wipes the text and the quoted
+    /// copies of it from memory and disk, turns the summary into a placeholder, leaves unread alone; the file's URLs and
+    /// cached downloads go and `filesExpired` tells the app (rule 3). A conversation with unread mentions of me fetches
+    /// convs again (F-MEN-03 rule 1). If unconfirmed local messages exist (timed out, ack lost), the deleted one may be
+    /// among them; the event only has msgId and seq, so pull from the server to match by clientMsgId and clear the queued
     /// copy as well.
-    private func onMsgDeleted(_ convId: String, msgIds: [String], seqs: [Int64]) {
-        let changed = store.deleteMessages(convId: convId, msgIds: msgIds, seqs: seqs)
-        if changed { emitMessages(convId) }
-        emitConversations()
+    private func onMsgDeleted(_ convId: String, msgIds: [String], seqs: [Int64], recall: RecallInfo?) {
+        let mentioned = hasMentions(convId)
+        applyDeleted(convId, msgIds: msgIds, seqs: seqs, recall: recall)
+        if mentioned { refreshMentions() }
         let list = store.list(convId)
         let top = seqs.max() ?? 0
         let local = store.maxSeq(convId)
@@ -829,6 +885,12 @@ public final class IMClient {
                 self.log.warn("im: deleted sync failed: \(describeForLog(error))")
             }
         }
+    }
+
+    func applyDeleted(_ convId: String, msgIds: [String], seqs: [Int64], recall: RecallInfo?) {
+        let changed = store.deleteMessages(convId: convId, msgIds: msgIds, seqs: seqs, recall: recall)
+        if changed { emitMessages(convId) }
+        emitConversations()
     }
 
     /// Updates the mute table. Unknown scopes are ignored. `until == nil` lifts the mute.
@@ -916,6 +978,7 @@ public final class IMClient {
     private func onMessage(_ m: ServerMessage) {
         let prev = store.maxSeq(m.convId)
         guard store.applyServerMessage(m) else { return }
+        if mentionsMe(m) { _ = store.bumpMention(m.convId, seq: m.seq) }
         // A tip's summary follows the server's rule (nicknames only, F-SOC-29 rule 6) until the next `convs`
         // overwrites it. Refetching would make every online member of a big group request at once.
         if m.type == .tip, let tip = m.body?.tip {
@@ -954,9 +1017,11 @@ public final class IMClient {
         lastRefreshAt = clock.now()
         for c in ack.convs {
             setGroupMute(c.convId, c.mutedUntil, allMuted: c.allMuted)
-            // Having missed msgDeleted, the summary is the only clue: wipe the loaded copy too.
+            // Having missed msgDeleted, the summary is the only clue: wipe the loaded copy too, as a recall when it says
+            // so (problem 32: no waiting for the re-sync).
+            let recall = c.lastMsg?.recalled == true ? RecallInfo(by: c.lastMsg?.recalledBy ?? "") : nil
             if let l = c.lastMsg, l.deleted == true,
-                store.deleteMessages(convId: c.convId, msgIds: [l.msgId], seqs: [])
+                store.deleteMessages(convId: c.convId, msgIds: [l.msgId], seqs: [], recall: recall)
             {
                 emitMessages(c.convId)
             }
@@ -1090,7 +1155,7 @@ public final class IMClient {
                         return
                     }
                     if let im = err as? IMError {
-                        self.fail(convId, clientMsgId, .code(im.code))
+                        self.fail(convId, clientMsgId, .code(im.code), reason: im.reason)
                     } else if case IMConnectionError.timeout = err {
                         self.fail(convId, clientMsgId, .timeout)
                     } else if !self.autoUsed.contains(clientMsgId) {
@@ -1105,12 +1170,13 @@ public final class IMClient {
             })
     }
 
-    func fail(_ convId: String, _ clientMsgId: String, _ error: SendFailure) {
+    func fail(_ convId: String, _ clientMsgId: String, _ error: SendFailure, reason: String? = nil) {
         let list = store.list(convId)
         guard let m = list.local(clientMsgId), m.status == .sending else { return }  // A late ack already won.
         list.update(clientMsgId) {
             $0.status = .failed
             $0.error = error
+            $0.errorReason = reason
         }
         emitMessages(convId)
         emit(.sendFailed(convId: convId, clientMsgId: clientMsgId, error: error))
@@ -1148,6 +1214,7 @@ public final class IMClient {
         }
         lastRead = clock.now()
         _ = store.advanceRead(convId, latest)
+        _ = store.clearMentions(convId)
         emitConversations()
         conn.request("read", ["convId": .string(convId), "seq": .int(latest)]) { [weak self] result in
             if case .failure(let err) = result {
@@ -1172,9 +1239,10 @@ public final class IMClient {
         commit()
         emit(.messages(convId: convId, messages: store.messages(convId)))
         emitPendingCount()
+        let recalled = store.takeRecalledFiles()
         let expired = store.takeExpiredFiles()
         if !expired.isEmpty {
-            for id in expired { forgetFile(id) }
+            for id in expired { forgetFile(id, recalled: recalled.contains(id)) }
             emit(.filesExpired(expired))
         }
     }
@@ -1192,6 +1260,7 @@ public final class IMClient {
         gapTimers = [:]
         if let r = readTimer { clock.clearTimeout(r) }
         readTimer = nil
+        resetMentionRefresh()
         destroyDatabase()
         clearFileData()
         pushSync.logout()
@@ -1215,7 +1284,8 @@ public final class IMClient {
         do {
             database = try openOrRebuild(url: url)
             let chat = try database!.loadChat(maxMessagesPerConversation: maxCached)
-            store.restore(convStates: chat.conversations, messages: chat.messages)
+            store.restore(
+                convStates: chat.conversations, messages: chat.messages, refs: try database!.loadRefs())
             restoreOutbox(try database!.loadOutbox())
             if let s = try database!.loadSocial() { restoreSocial(s) }
             emitConversations()

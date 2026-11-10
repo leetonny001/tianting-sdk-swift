@@ -136,6 +136,8 @@ extension IMClient {
     /// calling task. A cached copy is returned without any request. A failure leaves no partial file, and the next call
     /// starts from byte 0 with a new URL (AC-FILE-03-5). A refused GET (403: the URL expired) asks for a new URL once.
     /// Throws `FileTransferError`: `.unavailable(code:)` for 4048 (expired, revoked, no access), `.status`, `.cancelled`.
+    /// When the file's message is recalled, deleted or its file expires midway, the transfer stops, the partial file is
+    /// deleted, `.downloadAborted(fileId:recalled:)` is emitted and `DownloadAbortedError` thrown (AC-RCL-03-12).
     public func download(
         fileId: String, variant: FileVariant, progress: (@Sendable (Int64, Int64?) -> Void)? = nil
     ) async throws -> URL {
@@ -157,14 +159,34 @@ extension IMClient {
             let part = dest.deletingLastPathComponent().appendingPathComponent(
                 "\(dest.lastPathComponent).part-\(UUID().uuidString)")
             let status: Int
+            // The transfer runs in its own task: a recall or deletion stops only it (`forgetFile`), not the caller.
+            let handle = DownloadHandle()
+            let objectStore = files.objectStore
+            let report = progress ?? { _, _ in }
+            let transfer = Task { @MainActor in try await objectStore.get(url: url, to: part, progress: report) }
+            handle.task = transfer
+            downloads[fileId, default: [:]][ObjectIdentifier(handle)] = handle
+            defer {
+                downloads[fileId]?[ObjectIdentifier(handle)] = nil
+                if downloads[fileId]?.isEmpty == true { downloads[fileId] = nil }
+            }
             do {
-                status = try await files.objectStore.get(url: url, to: part, progress: progress ?? { _, _ in })
+                status = try await withTaskCancellationHandler {
+                    try await transfer.value
+                } onCancel: {
+                    transfer.cancel()
+                }
             } catch {
                 try? FileManager.default.removeItem(at: part)
                 files.forget(item)
+                if let r = handle.abortedRecalled { throw DownloadAbortedError(fileId: fileId, recalled: r) }
                 if Task.isCancelled { throw FileTransferError.cancelled }
                 if let e = error as? FileTransferError { throw e }
                 throw FileTransferError.status(0)
+            }
+            if let r = handle.abortedRecalled {
+                try? FileManager.default.removeItem(at: part)
+                throw DownloadAbortedError(fileId: fileId, recalled: r)
             }
             if (200..<300).contains(status) {
                 do {
@@ -468,8 +490,16 @@ extension IMClient {
         return fileCacheRoot.appendingPathComponent(hexName(me)).appendingPathComponent("\(hexName(fileId))-\(variant.rawValue)")
     }
 
-    /// An expired or deleted file: its URLs and cached downloads go (F-FILE-06 rule 3, F-RCL-03 rule 3).
-    func forgetFile(_ fileId: String) {
+    /// An expired, deleted or recalled file: running downloads stop (AC-RCL-03-12), its URLs and cached downloads go
+    /// (F-FILE-06 rule 3, F-RCL-03 rule 3).
+    func forgetFile(_ fileId: String, recalled: Bool = false) {
+        if let running = downloads.removeValue(forKey: fileId) {
+            for d in running.values {
+                d.abortedRecalled = recalled
+                d.task?.cancel()
+            }
+            emit(.downloadAborted(fileId: fileId, recalled: recalled))
+        }
         files?.forget(fileId)
         for v in [FileVariant.original, .thumb] {
             if let f = cacheFile(fileId, v) { try? FileManager.default.removeItem(at: f) }

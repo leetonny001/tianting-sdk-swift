@@ -125,8 +125,34 @@ im.cachedFile(fileId: id, variant: .thumb)  // 已下载的本地文件
 - 状态：`processing` → `uploading` → `queued`（待发送：已 complete）→ `sending` → `sent`，任何一步可以 `failed`。全局同时只传一个，按选择顺序；文字可以越过。上传的时间不算 10 秒发送超时。
 - `error`：`.code(4292)` 额度用完、`.code(4290)` + `errorReason == "uploadPendingLimit"`（都不自动重试）、`.code(4139/4150/4096/5032)`，或 `.network`、`.process`（"无法处理这张图片，请用文件方式发送"）、`.storage`（"存储空间不足"）、`.sourceMissing`（"原文件已不可用，请重新选择"）、`.interrupted`（冷启动时还在处理或上传）、`.timeout`、`.kicked`。`complete` 的 5032 退避 1、2、4 秒重试 3 次；`send` 返回 4096，或这台设备自己上传（`complete` 成功过）的 `fileId` 返回 4048（24 小时未绑定被清理，PRD-chat v1.4 F-FILE-07 规则 4），有沙盒副本的回到上传中重新上传，不占自动重发次数，没有的 `.sourceMissing`；别人的 `fileId` 收到 4048 照常失败。改头像后 `IMClient` 重新拉一次自己的资料（`TokenProvider.onProfileChanged` 带 `ProfileChange`，问题 H13）。
 - 沙盒副本：发出后删除，失败保留供手动重发，退出登录、被踢时整目录删除。没发出的图片和文件记在本地库的 `outbox` 表（只有沙盒里的文件名，不存预签名地址），冷启动时处理中、上传中的转失败、不自动重传；已经 complete 的按"排队"规则自动发一次。没有引用的沙盒文件启动时删除。
-- 本地库版本 2：版本 1 原地升级（加 `outbox` 表），已有的会话和消息保留。会话记着已核对的 `modVer`，重连只重拉 `modVer` 变了的会话（服务端没有 `modVer` 时全部重拉）；`deleted`、`expired` 只能从假变真，过期的文件名清空。
+- 本地库版本 2（C4 起是 3，见上一节）：版本 1 原地升级（加 `outbox` 表），已有的会话和消息保留。会话记着已核对的 `modVer`，重连只重拉 `modVer` 变了的会话（服务端没有 `modVer` 时全部重拉）；`deleted`、`expired` 只能从假变真，过期的文件名清空。
 - 对象存储的 PUT、GET（`URLSessionObjectStoreTransport`）每次用新的会话，不复用连接：断在半路的 PUT 只到达 1 次（`URLSessionRetryTests` 用真实 socket 数过）。GET 会被 URLSession 自己重发，对下载无害（只读、同一个短期地址、2xx 才写文件）。不跟随重定向，不打日志。
+
+## 撤回、引用、@（FE-663、FE-664，C4）
+
+语义和 sdk-ts、sdk-kotlin 相同（tianting-server 的 `docs/sdk/README.md` C4 部分）。服务端开关 `IM_MSG_ACTIONS_ENABLED`；`AccountConfig.features.msgActions` 为 `false` 时页面只留"复制"（老服务端没有这个字段，为 `nil`）。
+
+```swift
+try im.send(convId, text, quote: QuoteRef(msgId: id), mentions: Mentions(userIds: ["u2"], all: false))
+                                                 // 上行 quote 只发 msgId；mentions 只在群聊（单聊抛 IMArgumentError），userIds 去重
+try await im.recall(convId, msgId)               // 成功后本地立即撤回；4097（details.windowSeconds）、4030、4044 抛 IMError，不自动重试
+im.canRecall(m, myRole: nil)                     // 按 ts 和 auth ack 校正后的服务端时间：自己的 2 分钟；群主、管理员 7 天
+im.messageActions(m)                             // [.copy, .quote, .recall] 的子集；撤回、删除的消息和提示行是 []
+im.recallText(m)                                 // "你撤回了一条消息" 等（F-RCL-02 规则 1a）；列表摘要用 recallText(convId:lastMsg:)
+try await im.searchGroupMembers(groupId, keyword: "zh")   // @ 选人；4290 不自动重试
+messageFor(cmd: "recall", code: 4097, windowSeconds: 120) // "发送时间超过 2 分钟，无法撤回"；send 4293 "@所有人次数已用完"
+quoteSummary(m); quoteLabel(quote)               // 引用摘要（规则 2）；引用条文字（规则 3），不认识的 state "引用内容不可用"
+```
+
+| | |
+|---|---|
+| 模型 | `Message.recalled`、`recalledAt`、`recalledBy`（同时 `deleted == true`）；`MsgBody.quote`（`QuoteView`：msgId、seq、from、type、state、text）、`mentions`；`LastMsg.recalled`、`recalledBy`；`Conversation.mentionUnread`、`firstMentionSeq`；`IMError.reason`、`Message.errorReason`（4040 的 `quoteUnavailable`） |
+| 单调合并 | `deleted`、`recalled` 只能从假变真；`quote.state` 只能从 normal 往后走，`quote.text` 清除后不恢复；迟到的旧 sync、ack 带着原文也写不回来（F-RCL-03 规则 2a，`chat-sync.json`）。`convs` 的 `lastMsg` 带 `recalled` 时已加载的那条直接按撤回清（问题 32） |
+| 收到撤回 | `msgDeleted` 带 `recalled`：清除原文，本会话里引用它的消息（含待发的）的 `quote.text` 一起清掉、状态改 recalled（后台删除是 deleted，F-QUO-02 规则 4）；文件的地址和下载缓存清掉，发 `.filesExpired` |
+| 下载中被撤回 | 正在下载的文件所在消息被撤回、删除或过期：中止下载、删掉部分文件，`download` 抛 `DownloadAbortedError(fileId, recalled)`，发 `.downloadAborted(fileId:recalled:)`；App 据此提示"该消息已被撤回"（AC-RCL-03-12）。调用方自己取消仍是 `FileTransferError.cancelled` |
+| 提及 | 实时收到 @ 我或 @ 所有人的未读消息本地 +1（自己发的、已读位置之前的、服务端没给过计数的会话不推算），本端读到最新清零；有提及的会话收到 `readUpdated`、`msgDeleted` 时节流 5 秒重拉 `convs`（窗口内的推迟到窗口结束，断线时不拉，退出登录清定时器） |
+| 本地库 | 第 3 版：新表 `deleted_refs`（已删除的 msgId、seq 和撤回信息，含没加载过的消息，跨冷启动保留，问题 17）。第 1、2 版原地升级，旧行保留；更新或不认识的版本按缓存重建。撤回、清引用后照样 `secure_delete`（不支持时 VACUUM），数据库文件里搜不到原文 |
+| 日志 | 引用文字、@ 的内容不进日志（`QuoteView.description` 不带 text） |
 
 ## 本地库
 

@@ -346,7 +346,7 @@ final class Connection {
         let err = error.map {
             IMError(
                 code: $0.code, message: $0.msg ?? "",
-                userId: $0.userId ?? $0.details?["userId"]?.stringValue, details: $0.details)
+                userId: $0.userId ?? $0.details?["userId"]?.stringValue, details: $0.details, reason: $0.reason)
         }
         if p.timedOut {
             if let err {

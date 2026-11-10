@@ -140,7 +140,9 @@ func conv(
     myRole: String? = nil,
     mutedUntil: JSONValue? = nil,
     allMuted: Bool = false,
-    modVer: Int64? = nil
+    modVer: Int64? = nil,
+    mentionUnread: Int64? = nil,
+    firstMentionSeq: Int64? = nil
 ) -> JSONValue {
     var o: [String: JSONValue] = [
         "convId": .string(convId),
@@ -158,6 +160,8 @@ func conv(
     if let mutedUntil { o["mutedUntil"] = mutedUntil }
     if allMuted { o["allMuted"] = true }
     if let modVer { o["modVer"] = .int(modVer) }
+    if let mentionUnread { o["mentionUnread"] = .int(mentionUnread) }
+    if let firstMentionSeq { o["firstMentionSeq"] = .int(firstMentionSeq) }
     return .object(o)
 }
 

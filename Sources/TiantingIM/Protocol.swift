@@ -104,22 +104,134 @@ public struct FileBody: Sendable, Hashable, Codable {
     }
 }
 
+/// The state of a quote (PRD-chat F-QUO-02 rule 1): `normal` carries `text`; `recalled`, `deleted` and `expired` carry no
+/// original. Values not known here may come later: `quoteLabel` shows them as "引用内容不可用".
+public struct QuoteState: OpenEnum {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public static let normal: QuoteState = "normal"
+    public static let recalled: QuoteState = "recalled"
+    public static let deleted: QuoteState = "deleted"
+    public static let expired: QuoteState = "expired"
+
+    /// One of the four states this SDK knows.
+    public var isKnown: Bool { self == .normal || self == .recalled || self == .deleted || self == .expired }
+}
+
+/// A downstream quote (F-QUO-01 rule 3, F-QUO-02), assembled by the server when it delivers the message. When the quoted
+/// message no longer exists, `state == .deleted` without seq, from or type. `text` only for `.normal`: the first 100 code
+/// points of a text, "[图片]", or "[文件] {name}". Upstream only the msgId goes (`send(_:_:quote:)`); a local pending message
+/// builds the same structure from the loaded original. The quoted text never goes to logs (`description` leaves it out).
+public struct QuoteView: Sendable, Hashable, Codable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var msgId: String
+    public var seq: Int64?
+    public var from: String?
+    public var type: MessageType?
+    public var state: QuoteState
+    public var text: String?
+
+    public init(
+        msgId: String, seq: Int64? = nil, from: String? = nil, type: MessageType? = nil, state: QuoteState = .normal,
+        text: String? = nil
+    ) {
+        self.msgId = msgId
+        self.seq = seq
+        self.from = from
+        self.type = type
+        self.state = state
+        self.text = text
+    }
+
+    private enum CodingKeys: String, CodingKey { case msgId, seq, from, type, state, text }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        msgId = try c.decode(String.self, forKey: .msgId)
+        seq = c.value(.seq, default: nil)
+        from = c.value(.from, default: nil)
+        type = c.value(.type, default: nil)
+        state = c.value(.state, default: QuoteState(rawValue: "unknown"))
+        text = c.value(.text, default: nil)
+    }
+
+    public var description: String { "QuoteView(msgId: \(msgId), seq: \(seq.map(String.init) ?? "nil"), state: \(state.rawValue))" }
+    public var debugDescription: String { description }
+}
+
+/// Who a text @-mentions (F-MEN-01, 02): group chats and text only. Downstream it is what the server kept after filtering.
+/// Nicknames are not here: the "@昵称 " in the text is inserted by the app.
+public struct Mentions: Sendable, Hashable, Codable {
+    public var userIds: [String]
+    public var all: Bool
+
+    public init(userIds: [String] = [], all: Bool = false) {
+        self.userIds = userIds
+        self.all = all
+    }
+
+    private enum CodingKeys: String, CodingKey { case userIds, all }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        userIds = c.value(.userIds, default: [])
+        all = c.value(.all, default: false)
+    }
+
+    /// Ids deduplicated and without empty ones; nil when nothing is left (the schema has no empty mentions).
+    var normalized: Mentions? {
+        var seen = Set<String>()
+        let ids = userIds.filter { !$0.isEmpty && seen.insert($0).inserted }
+        return ids.isEmpty && !all ? nil : Mentions(userIds: ids, all: all)
+    }
+}
+
+/// The quote argument of `send` (PRD-chat 13.1): only the quoted message's msgId.
+public struct QuoteRef: Sendable, Hashable {
+    public var msgId: String
+    public init(msgId: String) { self.msgId = msgId }
+}
+
 public struct MsgBody: Sendable, Hashable, Codable {
     public var text: String?
     public var data: JSONValue?
     public var tip: TipBody?
     public var image: ImageBody?
     public var file: FileBody?
+    /// A quote (C4).
+    public var quote: QuoteView?
+    /// Who is @-mentioned (C4).
+    public var mentions: Mentions?
 
-    public init(text: String? = nil, data: JSONValue? = nil, tip: TipBody? = nil, image: ImageBody? = nil, file: FileBody? = nil) {
+    public init(
+        text: String? = nil, data: JSONValue? = nil, tip: TipBody? = nil, image: ImageBody? = nil, file: FileBody? = nil,
+        quote: QuoteView? = nil, mentions: Mentions? = nil
+    ) {
         self.text = text
         self.data = data
         self.tip = tip
         self.image = image
         self.file = file
+        self.quote = quote
+        self.mentions = mentions
     }
 
-    public var isEmpty: Bool { text == nil && data == nil && tip == nil && image == nil && file == nil }
+    private enum CodingKeys: String, CodingKey { case text, data, tip, image, file, quote, mentions }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        data = try c.decodeIfPresent(JSONValue.self, forKey: .data)
+        tip = try c.decodeIfPresent(TipBody.self, forKey: .tip)
+        image = try c.decodeIfPresent(ImageBody.self, forKey: .image)
+        file = try c.decodeIfPresent(FileBody.self, forKey: .file)
+        // A malformed quote or mentions does not lose the message.
+        quote = c.value(.quote, default: nil)
+        mentions = c.value(.mentions, default: nil)
+    }
+
+    public var isEmpty: Bool {
+        text == nil && data == nil && tip == nil && image == nil && file == nil && quote == nil && mentions == nil
+    }
 
     /// The image's or file's id; nil for other messages and for attachments not uploaded yet.
     public var fileId: String? {
@@ -130,13 +242,21 @@ public struct MsgBody: Sendable, Hashable, Codable {
     /// Whether the image or file expired (F-FILE-06 rule 3).
     public var fileExpired: Bool { image?.expired == true || file?.expired == true }
 
-    /// What goes up in `send`: attachments carry only the fileId; the server fills in the rest (F-FILE-02 rule 1).
+    /// What goes up in `send`: attachments carry only the fileId; the server fills in the rest (F-FILE-02 rule 1). A
+    /// quote carries only its msgId (the schema allows nothing else upstream).
     var json: JSONValue {
         var o: [String: JSONValue] = [:]
         if let text { o["text"] = .string(text) }
         if let data { o["data"] = data }
         if let image { o["image"] = ["fileId": .string(image.fileId)] }
         if let file { o["file"] = ["fileId": .string(file.fileId)] }
+        if let quote { o["quote"] = ["msgId": .string(quote.msgId)] }
+        if let mentions {
+            var m: [String: JSONValue] = [:]
+            if !mentions.userIds.isEmpty { m["userIds"] = .array(mentions.userIds.map { .string($0) }) }
+            if mentions.all { m["all"] = true }
+            o["mentions"] = .object(m)
+        }
         return .object(o)
     }
 }
@@ -152,8 +272,14 @@ struct ServerMessage: Sendable, Decodable {
     /// Deleted messages have no body (PRD-core F-MSG-05 rule 7).
     var body: MsgBody?
     var ts: Int64
+    /// No body: deleted by the console, or recalled (then `recalled` is true too, PRD-chat F-RCL-01 rule 5a).
     var deleted: Bool?
     var deletedAt: Int64?
+    /// Recalled (C4): only present when true, together with `deleted` and no body.
+    var recalled: Bool? = nil
+    var recalledAt: Int64? = nil
+    /// Who recalled it: the sender, or a group owner or admin.
+    var recalledBy: String? = nil
 }
 
 public struct LastMsg: Sendable, Hashable, Codable {
@@ -164,14 +290,22 @@ public struct LastMsg: Sendable, Hashable, Codable {
     public var text: String?
     public var ts: Int64
     public var deleted: Bool?
+    /// Recalled (C4, F-RCL-03 rule 4): then `deleted` is true too, and `recalledBy` says who.
+    public var recalled: Bool?
+    public var recalledBy: String?
 
-    public init(msgId: String, from: String, type: String, text: String? = nil, ts: Int64, deleted: Bool? = nil) {
+    public init(
+        msgId: String, from: String, type: String, text: String? = nil, ts: Int64, deleted: Bool? = nil,
+        recalled: Bool? = nil, recalledBy: String? = nil
+    ) {
         self.msgId = msgId
         self.from = from
         self.type = type
         self.text = text
         self.ts = ts
         self.deleted = deleted
+        self.recalled = recalled
+        self.recalledBy = recalledBy
     }
 }
 
@@ -195,10 +329,14 @@ struct ServerConversation: Sendable, Decodable {
     /// The version of how existing messages look (C2: file expiry); a change re-syncs this conversation (F-RCL-03
     /// rule 2). Older servers do not send it.
     var modVer: Int64?
+    /// Unread messages mentioning me, @all included (F-MEN-03 rule 1, C4). Absent when the feature is off or on older servers.
+    var mentionUnread: Int64?
+    /// The first unread seq mentioning me; absent when `mentionUnread == 0`.
+    var firstMentionSeq: Int64?
 
     private enum CodingKeys: String, CodingKey {
         case convId, type, name, maxSeq, readSeq, minSeq, unread, lastMsg, updatedAt, memberCount, myRole, mutedUntil, allMuted,
-            modVer
+            modVer, mentionUnread, firstMentionSeq
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +355,8 @@ struct ServerConversation: Sendable, Decodable {
         mutedUntil = try c.decodeUntil(forKey: .mutedUntil)
         allMuted = c.value(.allMuted, default: false)
         modVer = try? c.decodeIfPresent(Int64.self, forKey: .modVer)
+        mentionUnread = try? c.decodeIfPresent(Int64.self, forKey: .mentionUnread)
+        firstMentionSeq = try? c.decodeIfPresent(Int64.self, forKey: .firstMentionSeq)
     }
 }
 
@@ -267,6 +407,8 @@ struct FrameError: Sendable, Decodable {
     var code: Int
     var msg: String?
     var userId: String?
+    /// Splits one code (4040 `quoteUnavailable`, 4030 `mentionAllForbidden`; errors.json `reasons`).
+    var reason: String?
     var details: [String: JSONValue]?
 }
 

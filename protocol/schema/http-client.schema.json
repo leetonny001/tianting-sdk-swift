@@ -62,6 +62,10 @@
           "properties": {
             "files": {
               "type": "boolean"
+            },
+            "msgActions": {
+              "type": "boolean",
+              "description": "C4 撤回、引用、@（IM_MSG_ACTIONS_ENABLED，PRD-chat 第 4.1 节）：false 时隐藏入口。老服务端没有这个字段，按 false 处理"
             }
           }
         },

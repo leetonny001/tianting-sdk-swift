@@ -33,9 +33,13 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 /// their sandbox copies (F-FILE-07 rules 2, 3). Presigned URLs are never stored.
 ///
 /// Version 2 (C2) adds `outbox`; message and conversation JSON gained optional fields only, so version 1 is upgraded in
-/// place and keeps its rows. Any other version is dropped and refilled from the server.
+/// place and keeps its rows. Version 3 (C4) adds `deleted_refs`: deleted msgIds and seqs and known recalls, including
+/// messages never loaded, so a late old sync after a cold start cannot bring their text back (F-RCL-03 rule 2a); the
+/// recalled, quote and mentions fields of messages and the mention counts of conversations live in the JSON columns, so
+/// versions 1 and 2 are upgraded in place too. The version goes up anyway: an older SDK opening a version 3 file rebuilds
+/// it instead of keeping rows it does not understand. Any other version is dropped and refilled from the server.
 final class LocalDatabase {
-    static let schemaVersion: Int32 = 2
+    static let schemaVersion: Int32 = 3
 
     let url: URL
     private var db: OpaquePointer?
@@ -78,12 +82,14 @@ final class LocalDatabase {
         try exec("PRAGMA synchronous=NORMAL")
         try exec("PRAGMA temp_store=MEMORY")
         var version = try pragmaInt("PRAGMA user_version")
-        if version == 1 {
+        if version == 1 || version == 2 {
+            let from = version
             try inTransaction {
-                try exec(LocalDatabase.outboxSchema)
-                try exec("PRAGMA user_version=2")
+                if from == 1 { try exec(LocalDatabase.outboxSchema) }
+                try exec(LocalDatabase.refsSchema)
+                try exec("PRAGMA user_version=\(LocalDatabase.schemaVersion)")
             }
-            version = 2
+            version = Int64(LocalDatabase.schemaVersion)
         }
         if version != Int64(LocalDatabase.schemaVersion) {
             // A cache: anything older is simply dropped and refilled from the server.
@@ -96,6 +102,7 @@ final class LocalDatabase {
                 DROP TABLE IF EXISTS friend_requests;
                 DROP TABLE IF EXISTS blocks;
                 DROP TABLE IF EXISTS outbox;
+                DROP TABLE IF EXISTS deleted_refs;
                 """)
             try createSchema()
         }
@@ -129,6 +136,7 @@ final class LocalDatabase {
               PRIMARY KEY (user_id, direction));
             CREATE TABLE blocks (user_id TEXT PRIMARY KEY, item TEXT NOT NULL);
             \(LocalDatabase.outboxSchema)
+            \(LocalDatabase.refsSchema)
             PRAGMA user_version=\(LocalDatabase.schemaVersion);
             """)
     }
@@ -136,6 +144,10 @@ final class LocalDatabase {
     /// Unsent images and files (C2): the message and its source (sandbox file names, never URLs).
     static let outboxSchema =
         "CREATE TABLE outbox (client_msg_id TEXT PRIMARY KEY, conv_id TEXT NOT NULL, message TEXT NOT NULL, source TEXT);"
+
+    /// Deleted and recalled references (C4): kind "id" (msgId), "seq", "recalled" (JSON, see `RecalledRef`). No text.
+    static let refsSchema =
+        "CREATE TABLE deleted_refs (conv_id TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY (conv_id, kind, ref));"
 
     // MARK: Outbox
 
@@ -206,9 +218,15 @@ final class LocalDatabase {
                     "INSERT OR REPLACE INTO messages (conv_id, seq, message) VALUES (?, ?, ?)",
                     [.text(m.convId), .int(seq), .text(try encode(m))])
             }
+            for r in c.refs {
+                try run(
+                    "INSERT OR IGNORE INTO deleted_refs (conv_id, kind, ref) VALUES (?, ?, ?)",
+                    [.text(r.convId), .text(r.kind), .text(r.ref)])
+            }
         }
+        // Recalls and cleared quotes scrub the file like deletions (with secure_delete the freed cells are zeroed).
         let wiped =
-            !c.clearMessages.isEmpty || !c.deleteConvs.isEmpty
+            c.wiped || !c.clearMessages.isEmpty || !c.deleteConvs.isEmpty
             || c.upsertMessages.contains { $0.deleted == true }
             || c.upsertConvs.contains { $0.view.lastMsg?.deleted == true }
         if !secureDelete, wiped { try exec("VACUUM") }
@@ -286,6 +304,36 @@ final class LocalDatabase {
             if let m = decodeColumn(Message.self, stmt, 0) { msgs.append(m) }
         }
         return (convs, msgs)
+    }
+
+    /// The `deleted_refs` rows by conversation.
+    func loadRefs() throws -> [String: StoredRefs] {
+        var out: [String: StoredRefs] = [:]
+        try query("SELECT conv_id, kind, ref FROM deleted_refs", []) { stmt in
+            guard let c = sqlite3_column_text(stmt, 0), let k = sqlite3_column_text(stmt, 1),
+                let r = sqlite3_column_text(stmt, 2)
+            else { return }
+            let convId = String(cString: c)
+            let ref = String(cString: r)
+            var e = out[convId] ?? StoredRefs()
+            switch String(cString: k) {
+            case "id": e.ids.insert(ref)
+            case "seq": if let s = Int64(ref) { e.seqs.insert(s) }
+            case "recalled":
+                guard let x = try? JSONCoding.decoder.decode(RecalledRef.self, from: Data(ref.utf8)) else { return }
+                let info = RecallInfo(by: x.by, at: x.at)
+                // Recalled more than once (a local estimate, then the server's): keep the one with an operator.
+                let pick: (RecallInfo, RecallInfo) -> RecallInfo = { a, b in a.by.isEmpty ? b : a }
+                if x.k == "id" {
+                    e.recalledIds[x.v] = e.recalledIds[x.v].map { pick($0, info) } ?? info
+                } else if x.k == "seq", let s = Int64(x.v) {
+                    e.recalledSeqs[s] = e.recalledSeqs[s].map { pick($0, info) } ?? info
+                }
+            default: break
+            }
+            out[convId] = e
+        }
+        return out
     }
 
     func loadSocial() throws -> StoredSocial? {

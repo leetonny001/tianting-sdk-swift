@@ -185,6 +185,14 @@ public enum RegisterMode: String, Sendable, Equatable {
 public struct AccountConfig: Sendable, Equatable, Decodable {
     public struct Features: Sendable, Equatable, Decodable {
         public var files: Bool
+        /// Recall, quote and @ (C4, BE-479; F-UI-09 rule 4): false keeps only "复制" in the message menu. nil when an
+        /// older server does not send it.
+        public var msgActions: Bool?
+
+        public init(files: Bool, msgActions: Bool? = nil) {
+            self.files = files
+            self.msgActions = msgActions
+        }
     }
     public struct Limits: Sendable, Equatable, Decodable {
         public var usernameMinLen: Int

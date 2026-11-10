@@ -1165,7 +1165,7 @@ final class FileRestartTests: IMTestCase {
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(check, "PRAGMA user_version", -1, &stmt, nil)
         sqlite3_step(stmt)
-        XCTAssertEqual(sqlite3_column_int(stmt, 0), 2)
+        XCTAssertEqual(sqlite3_column_int(stmt, 0), LocalDatabase.schemaVersion)  // 3 since C4 (deleted_refs).
         sqlite3_finalize(stmt)
         sqlite3_close(check)
     }

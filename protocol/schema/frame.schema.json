@@ -55,7 +55,7 @@
     },
     "MsgBody": {
       "type": "object",
-      "description": "text: {text}；custom: {data}，data 为业务自定义 JSON；tip: {tip}（只由服务端生成）；image: {image}；file: {file}。按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效），见 BodyByType",
+      "description": "text: {text, quote?, mentions?}；custom: {data}，data 为业务自定义 JSON；tip: {tip}（只由服务端生成）；image: {image}；file: {file}。按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效），见 BodyByType。quote 上行是 QuoteRef、下行是 QuoteView（C4）",
       "properties": {
         "text": {
           "type": "string",
@@ -71,6 +71,13 @@
         },
         "file": {
           "$ref": "#/$defs/FileBody"
+        },
+        "quote": {
+          "type": "object",
+          "description": "引用（PRD-chat F-QUO-01，C4）：上行 QuoteRef（SendReq 约束），下行 QuoteView（Message 约束）。只有 text 能带"
+        },
+        "mentions": {
+          "$ref": "#/$defs/Mentions"
         }
       },
       "minProperties": 1
@@ -198,6 +205,21 @@
         },
         {
           "$ref": "#/$defs/PushSyncReq"
+        },
+        {
+          "$ref": "#/$defs/DeviceNotificationRegisterReq"
+        },
+        {
+          "$ref": "#/$defs/DeviceNotificationUnregisterReq"
+        },
+        {
+          "$ref": "#/$defs/DeviceNotificationSettingsReq"
+        },
+        {
+          "$ref": "#/$defs/PresenceReq"
+        },
+        {
+          "$ref": "#/$defs/RecallReq"
         }
       ]
     },
@@ -282,6 +304,40 @@
           "allOf": [
             {
               "$ref": "#/$defs/BodyByType"
+            },
+            {
+              "properties": {
+                "body": {
+                  "properties": {
+                    "quote": {
+                      "$ref": "#/$defs/QuoteRef"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "convType": {
+                    "const": "group"
+                  }
+                },
+                "required": [
+                  "convType"
+                ]
+              },
+              "else": {
+                "properties": {
+                  "body": {
+                    "not": {
+                      "required": [
+                        "mentions"
+                      ]
+                    }
+                  }
+                }
+              }
             }
           ]
         }
@@ -1288,6 +1344,11 @@
               "minimum": 1,
               "maximum": 100,
               "default": 50
+            },
+            "keyword": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "成员搜索（PRD-chat F-MEN-01 规则 6，C4）：userId 前缀（区分大小写）或昵称前缀（ASCII 不区分大小写），空串按没有处理；带 keyword 的请求每人每分钟 30 次（4290）。IM_MSG_ACTIONS_ENABLED 关闭时照常可用"
             }
           },
           "additionalProperties": false
@@ -1587,10 +1648,21 @@
         },
         "deleted": {
           "type": "boolean",
-          "description": "被删除（第二批，F-MSG-05 规则 7）：这时没有 body，seq 不留空洞"
+          "description": "没有正文（第二批，F-MSG-05 规则 7）：后台删除或撤回（C4，同时 recalled=true），这时没有 body，seq 不留空洞"
         },
         "deletedAt": {
           "$ref": "#/$defs/TimestampMs"
+        },
+        "recalled": {
+          "type": "boolean",
+          "description": "被撤回（PRD-chat F-RCL-01 规则 5a，C4）：只在为 true 时出现，同时 deleted=true、没有 body；老 SDK 按 deleted 显示「该消息已被删除」"
+        },
+        "recalledAt": {
+          "$ref": "#/$defs/TimestampMs"
+        },
+        "recalledBy": {
+          "$ref": "#/$defs/UserId",
+          "description": "撤回的操作者（发送者本人，或群主、管理员）"
         }
       },
       "additionalProperties": false,
@@ -1637,6 +1709,57 @@
         },
         {
           "$ref": "#/$defs/BodyByType"
+        },
+        {
+          "if": {
+            "properties": {
+              "recalled": {
+                "const": true
+              }
+            },
+            "required": [
+              "recalled"
+            ]
+          },
+          "then": {
+            "required": [
+              "deleted",
+              "recalledAt",
+              "recalledBy"
+            ],
+            "properties": {
+              "deleted": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "recalledAt"
+                  ]
+                },
+                {
+                  "required": [
+                    "recalledBy"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "body": {
+              "properties": {
+                "quote": {
+                  "$ref": "#/$defs/QuoteView"
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -1675,6 +1798,13 @@
             "deleted": {
               "type": "boolean",
               "description": "最后一条消息被删除（第二批，F-ADM-31 规则 3）：这时没有 text，显示「该消息已被删除」"
+            },
+            "recalled": {
+              "type": "boolean",
+              "description": "最后一条被撤回（PRD-chat F-RCL-03 规则 4，C4）：同时 deleted=true、没有 text、带 recalledBy"
+            },
+            "recalledBy": {
+              "$ref": "#/$defs/UserId"
             }
           },
           "additionalProperties": false,
@@ -1717,6 +1847,36 @@
                 "required": [
                   "text"
                 ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "recalled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "recalled"
+                ]
+              },
+              "then": {
+                "required": [
+                  "deleted",
+                  "recalledBy"
+                ],
+                "properties": {
+                  "deleted": {
+                    "const": true
+                  }
+                }
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "recalledBy"
+                  ]
+                }
               }
             }
           ]
@@ -1805,6 +1965,15 @@
           "type": "integer",
           "minimum": 0,
           "description": "会话内已有消息的展示内容变化的版本号（C2：文件过期），变化时客户端重拉这个会话（PRD-chat F-RCL-03 规则 2、2a）。老服务端没有这个字段"
+        },
+        "mentionUnread": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "未读中提及我的消息数，含 @ 所有人（自己发的不算），撤回、删除的不计入（PRD-chat F-MEN-03 规则 1，C4）。IM_MSG_ACTIONS_ENABLED 开启时每个会话都带，关闭或老服务端没有这个字段"
+        },
+        "firstMentionSeq": {
+          "$ref": "#/$defs/Seq",
+          "description": "未读里第一条提及我的 seq；mentionUnread=0 时没有"
         }
       },
       "additionalProperties": false
@@ -1824,7 +1993,7 @@
         },
         "data": {
           "type": "object",
-          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}",
+          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}；deviceNotificationSettings → {showDetail}；deviceNotificationRegister、deviceNotificationUnregister、presence、recall → {}",
           "properties": {
             "userId": {
               "$ref": "#/$defs/UserId"
@@ -2209,6 +2378,10 @@
             "recoveryCodeUnacked": {
               "type": "boolean",
               "description": "auth：账号最新一代恢复码没有确认时才出现（PRD-chat F-ACC-05 规则 1）"
+            },
+            "showDetail": {
+              "type": "boolean",
+              "description": "deviceNotificationSettings：这台设备当前的\"显示发送者和内容\"（PRD-chat F-APN-03 规则 2）"
             }
           },
           "additionalProperties": false
@@ -2401,6 +2574,23 @@
                   "items": {
                     "$ref": "#/$defs/Seq"
                   }
+                },
+                "recalled": {
+                  "type": "object",
+                  "description": "撤回（PRD-chat F-RCL-01 规则 5a，C4）：只在撤回时出现；后台删除没有。不新增事件名，老 SDK 按删除处理",
+                  "required": [
+                    "by",
+                    "at"
+                  ],
+                  "properties": {
+                    "by": {
+                      "$ref": "#/$defs/UserId"
+                    },
+                    "at": {
+                      "$ref": "#/$defs/TimestampMs"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -2754,6 +2944,142 @@
       },
       "additionalProperties": false
     },
+    "DeviceNotificationRegisterReq": {
+      "type": "object",
+      "description": "PRD-chat F-APN-01 规则 1（C3）：令牌绑定当前 sid；没有 sid 的 token 只绑定 userId。每账号每小时 10 次（4290）；令牌为空或超长 4000；开关关闭 4030 featureDisabled。ack data 为空对象",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "deviceNotificationRegister"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "provider",
+            "token",
+            "appId"
+          ],
+          "properties": {
+            "provider": {
+              "enum": [
+                "apns",
+                "fcm"
+              ]
+            },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "description": "设备令牌。上限 4096（按 UTF-8 字节，服务端按字节判断；APNs 十六进制令牌和 FCM 令牌都放得下，BE-450 第 1 条）"
+            },
+            "env": {
+              "enum": [
+                "sandbox",
+                "production"
+              ],
+              "description": "缺省为 production；FCM 不区分环境"
+            },
+            "appId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "bundle id 或包名"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeviceNotificationUnregisterReq": {
+      "type": "object",
+      "description": "PRD-chat F-APN-01 规则 1（C3）：删除当前 sid 绑定的令牌；没有 sid 时删除这个用户没有 sid 的令牌。ack data 为空对象",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "deviceNotificationUnregister"
+        },
+        "data": {
+          "type": "object",
+          "maxProperties": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeviceNotificationSettingsReq": {
+      "type": "object",
+      "description": "PRD-chat F-APN-03 规则 2（C3）：不带 showDetail 只读取；没有令牌也能设置。ack → {showDetail}",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "deviceNotificationSettings"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "showDetail": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "PresenceReq": {
+      "type": "object",
+      "description": "PRD-chat F-APN-02 规则 3（C3）：普通带 id 的命令（R-CB-26）。android、ios 的连接 auth 之后第一帧上报当前状态，收到之前按后台；web、pc 默认前台不上报。ack data 为空对象",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "presence"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "foreground",
+                "background"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "ImageBody": {
       "type": "object",
       "description": "上行只用 fileId，其他字段不报错、被忽略，所以这里不写 additionalProperties:false（AC-FILE-02-2、02-11）；下行是服务端记录的真实值。expired=true 时对象已删除，不再发放地址",
@@ -2814,7 +3140,7 @@
       }
     },
     "BodyByType": {
-      "description": "MsgBody 按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效，不受开关影响）：text 只能带 text（quote、mentions 的结构随 C4 加），custom 只能带 data，image 只能带 image，file 只能带 file，tip 只能带 tip。用在 send 的 data 和 Message 上",
+      "description": "MsgBody 按 type 互斥（PRD-chat F-MOD-02 规则 4a，C2 起生效，不受开关影响）：text 只能带 text、quote、mentions（C4），custom 只能带 data，image 只能带 image，file 只能带 file，tip 只能带 tip。用在 send 的 data 和 Message 上",
       "allOf": [
         {
           "if": {
@@ -2836,7 +3162,9 @@
                 ],
                 "propertyNames": {
                   "enum": [
-                    "text"
+                    "text",
+                    "quote",
+                    "mentions"
                   ]
                 }
               }
@@ -2952,6 +3280,154 @@
           }
         }
       ]
+    },
+    "QuoteRef": {
+      "type": "object",
+      "description": "上行引用（PRD-chat F-QUO-01 规则 1，C4）：只有 msgId。被引用的消息必须同一会话、发送者能看到、没有撤回或删除、不是 tip，否则 4040 reason=quoteUnavailable（几种原因响应相同）。服务端只保存 quote_msg_id，不复制内容",
+      "required": [
+        "msgId"
+      ],
+      "properties": {
+        "msgId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuoteView": {
+      "type": "object",
+      "description": "下行引用（PRD-chat F-QUO-02，C4），下发时组装。state：normal 带 text（文本前 100 个码点；图片「[图片]」；文件「[文件] {文件名}」；带引用的消息只取它自己的文字）；recalled、deleted、expired 没有 text。原消息已不存在时 state=deleted，没有 seq、from、type。客户端不认识的 state 显示「引用内容不可用」",
+      "required": [
+        "msgId",
+        "state"
+      ],
+      "properties": {
+        "msgId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{0,64}$"
+        },
+        "type": {
+          "$ref": "#/$defs/MsgType"
+        },
+        "state": {
+          "enum": [
+            "normal",
+            "recalled",
+            "deleted",
+            "expired"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "只有 state=normal 才有"
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "state": {
+            "const": "normal"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "msgId",
+          "state",
+          "seq",
+          "from",
+          "type"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "text"
+          ]
+        }
+      }
+    },
+    "Mentions": {
+      "type": "object",
+      "description": "@（PRD-chat F-MEN-01、02，C4）：只在群聊、只有 text 能带。上行 userIds 最多 IM_MENTION_MAX（默认 20）个，超出 4131 由服务端判断（不在 Schema 里拦）；服务端去重、静默去掉不是当前成员的，下发的是过滤后的结果。all=true 只有群主、管理员（4030 reason=mentionAllForbidden），次数 4293。服务端不解析正文里的 @",
+      "properties": {
+        "userIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UserId"
+          }
+        },
+        "all": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "userIds"
+          ],
+          "properties": {
+            "userIds": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "all"
+          ],
+          "properties": {
+            "all": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "RecallReq": {
+      "type": "object",
+      "description": "PRD-chat F-RCL-01、02（C4）：撤回。普通带 id 的命令，ack data 为空对象。校验顺序：格式 → 频率（每人每分钟 20 次，4290，重试也计数）→ 会话权限（4032、4033、4043）→ 消息存在（4044，属于其他会话也是）→ tip 4000 → 已撤回（幂等成功，不再发事件）→ 已被后台删除（4044）→ 权限和时限（4030、4097 details.windowSeconds）。开关关闭 4030 featureDisabled",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "recall"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "convId",
+            "msgId"
+          ],
+          "properties": {
+            "convId": {
+              "$ref": "#/$defs/ConvId"
+            },
+            "msgId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

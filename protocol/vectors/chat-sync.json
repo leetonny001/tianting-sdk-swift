@@ -1,14 +1,16 @@
 {
-  "description": "消息同步共享用例（PRD-chat F-RCL-03 规则 2、2a；第 15 节表 C2 的\"合并和过期\"）。按顺序执行 steps，connect、load 之后断言 expect。期望结果由服务端的 Go 参考客户端（server/e2e/chatmodel）生成，不要手改。",
-  "scope": "C2 只有单调合并里的 expired 和 modVer 重拉。撤回、引用、提及、置顶、deleted、总未读随 C4、C5 加到这份文件。三套 SDK 用假传输层跑真实的客户端（AC-CHAT-90-15）。",
+  "description": "消息同步共享用例（PRD-chat F-RCL-03 规则 2、2a，F-QUO-02 规则 4，F-MEN-03 规则 1；第 15 节表 C2 的\"合并和过期\"、C4 的\"撤回合并、引用清除、提及计数\"）。按顺序执行 steps，connect、load、event、advance 之后断言 expect。期望结果由服务端的 Go 参考客户端（server/e2e/chatmodel）生成，不要手改。",
+  "scope": "C2：单调合并里的 expired 和 modVer 重拉。C4：deleted、recalled 只能从假变真，quote.state 只能从 normal 往后走、quote.text 清除后不恢复，收到 msgDeleted 时清除引用它的原文，提及计数的节流刷新。置顶、删除会话、总未读随 C5 加到这份文件。三套 SDK 用假传输层跑真实的客户端（AC-CHAT-90-15）。",
   "format": {
+    "advance": "[SDK 钟] 推进 ms 毫秒（每个用例从 0 开始；connect、load、event 不推进时钟）。节流窗口里被推迟的刷新在窗口结束（上次刷新后 5000 毫秒）时发出，应答是这一步的 convs",
     "connect": "（重）连接成功，convs 应答为 convs。之后 SDK 发出的每个 sync 都按 convId 回复：errors 里有的回这个错误码，否则回 replies 里的消息（没有就是空列表），hasMore=false，直到不再发 sync。maxSeq 等于已加载的最大 seq，所以只有重拉，没有补拉",
     "disconnect": "连接断开（不是退出登录），之后按 SDK 的重连规则重连，由下一步 connect 完成",
-    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同；某个会话重拉失败只影响它自己，其余会话照拉（P-39 ②），所以集合和顺序无关）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）和 file 的 name",
+    "event": "服务端下发一个事件，event 是事件帧的 data（msgDeleted、readUpdated，字段和协议相同）。这一步里 SDK 如果为了提及计数重新拉 convs（F-MEN-03 规则 1：这个会话本地 mentionUnread > 0 时，节流每 5 秒最多一次），应答是这一步的 convs；这些 convs 只用来更新 mentionUnread，modVer 和上次相同，不会引起重拉",
+    "expect": "syncs：这一步 SDK 发过 sync 的会话（排好序，空列表表示一个都没有；重拉的顺序各端可以不同；某个会话重拉失败只影响它自己，其余会话照拉（P-39 ②），所以集合和顺序无关）。filesExpired：这一步新变成已过期的 fileId（排好序；sdk-ts 是 filesExpired 事件，原生端是 FilesExpired / .filesExpired），空列表表示没有。messages：已加载的会话的全部消息，按 seq 比较 type、fileId、expired（缺省为 false）、file 的 name、text、quote（seq、state、text）、deleted、recalled、recalledBy（缺省为 false / 空）；deleted 的消息只比较 seq、type、deleted、recalled、recalledBy，原文、文件名、引用都必须已清除（内存和本地库搜不到特征串 ZXQ-RCL-2、ZXQ-QUO-1）。convsFetches：event、advance 这一步 SDK 发了几次 convs。mentionUnread：本地记的 mentionUnread（只有 convs 带过这个字段的会话）",
     "load": "App 打开会话加载最新一页（loadHistory），SDK 发出的 sync 回复 messages，hasMore=false。messages 为空时 SDK 可以不发请求",
     "self": "登录用户。会话 c2c:alice:bob 的对方是 bob",
-    "会话": "{convId, maxSeq, modVer?} 展开为 convs 里的会话：type 按前缀，name=convId，readSeq=maxSeq，minSeq=1，unread=0，lastMsg=null，updatedAt=0；modVer 不写表示老服务端没有这个字段",
-    "消息": "{seq, type, fileId, name?, expired?} 展开为下行消息：msgId=<convId>#<seq>，clientMsgId=bob-<convId>-<seq>，from=bob，ts=1000+seq；image 的 body 为 {image:{fileId, width:10, height:10, size:100, mime:\"image/png\", expired?}}，file 为 {file:{fileId, name, size:100, mime:\"application/pdf\", expired?}}；expired 只在为 true 时出现"
+    "会话": "{convId, maxSeq, modVer?, mentionUnread?} 展开为 convs 里的会话：type 按前缀，name=convId，readSeq=maxSeq，minSeq=1，unread=0，lastMsg=null，updatedAt=0；modVer 不写表示老服务端没有这个字段；mentionUnread 不写表示没有这个字段（C4 开关关闭或老服务端），firstMentionSeq 在 mentionUnread>0 时等于 maxSeq",
+    "消息": "{seq, type, fileId?, name?, expired?, text?, quote?, deleted?, recalled?, recalledBy?} 展开为下行消息：msgId=<convId>#<seq>，clientMsgId=bob-<convId>-<seq>，from=bob，ts=1000+seq；image 的 body 为 {image:{fileId, width:10, height:10, size:100, mime:\"image/png\", expired?}}，file 为 {file:{fileId, name, size:100, mime:\"application/pdf\", expired?}}，text 为 {text, quote?}；quote {seq, state, text?} 展开为 {msgId:<convId>#<seq>, seq, from:\"bob\", type:\"text\", state, text?}；deleted=true 的消息没有 body，带 deleted:true，recalled=true 时再带 recalled:true、recalledAt=2000+seq、recalledBy；expired、deleted、recalled 只在为 true 时出现"
   },
   "self": "alice",
   "cases": [
@@ -1581,6 +1583,884 @@
                   "name": "ZXQ-FILE-NAME.pdf"
                 }
               ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "撤回：收到带 recalled 的 msgDeleted 后原文清除，引用它的消息清除引用原文；迟到的旧 sync 带 deleted=false 和原文、引用 state=normal，都不恢复",
+      "rule": "F-RCL-03 规则 1、2a，F-QUO-02 规则 4（RC2-10）",
+      "acs": [
+        "AC-RCL-03-13",
+        "AC-QUO-02-2"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 3
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {}
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-RCL-2 原文"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "回复",
+              "quote": {
+                "seq": 1,
+                "state": "normal",
+                "text": "ZXQ-RCL-2 原文"
+              }
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-RCL-2 原文"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "回复",
+                  "quote": {
+                    "seq": 1,
+                    "state": "normal",
+                    "text": "ZXQ-RCL-2 原文"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "msgDeleted",
+            "convId": "c2c:alice:bob",
+            "msgIds": [
+              "c2c:alice:bob#1"
+            ],
+            "seqs": [
+              1
+            ],
+            "recalled": {
+              "by": "bob",
+              "at": 2000
+            }
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "deleted": true,
+                  "recalled": true,
+                  "recalledBy": "bob"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "回复",
+                  "quote": {
+                    "seq": 1,
+                    "state": "recalled"
+                  }
+                }
+              ]
+            },
+            "convsFetches": 0
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 4
+            }
+          ],
+          "replies": {
+            "c2c:alice:bob": [
+              {
+                "seq": 1,
+                "type": "text",
+                "text": "ZXQ-RCL-2 原文"
+              },
+              {
+                "seq": 2,
+                "type": "text",
+                "text": "回复",
+                "quote": {
+                  "seq": 1,
+                  "state": "normal",
+                  "text": "ZXQ-RCL-2 原文"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "c2c:alice:bob"
+            ],
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "deleted": true,
+                  "recalled": true,
+                  "recalledBy": "bob"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "回复",
+                  "quote": {
+                    "seq": 1,
+                    "state": "recalled"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "撤回：重连后 sync 返回撤回状态才知道（离线期间撤回）；recalled 只能从假变真，之后的旧应答不回写",
+      "rule": "F-RCL-03 规则 2、2a",
+      "acs": [
+        "AC-RCL-03-13",
+        "AC-RCL-03-11"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 3
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {}
+          }
+        },
+        {
+          "op": "load",
+          "convId": "c2c:alice:bob",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-RCL-2 原文"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "另一条"
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-RCL-2 原文"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "另一条"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 4
+            }
+          ],
+          "replies": {
+            "c2c:alice:bob": [
+              {
+                "seq": 1,
+                "type": "text",
+                "deleted": true,
+                "recalled": true,
+                "recalledBy": "bob"
+              },
+              {
+                "seq": 2,
+                "type": "text",
+                "text": "另一条"
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "c2c:alice:bob"
+            ],
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "deleted": true,
+                  "recalled": true,
+                  "recalledBy": "bob"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "另一条"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "c2c:alice:bob",
+              "maxSeq": 2,
+              "modVer": 5
+            }
+          ],
+          "replies": {
+            "c2c:alice:bob": [
+              {
+                "seq": 1,
+                "type": "text",
+                "text": "ZXQ-RCL-2 原文"
+              },
+              {
+                "seq": 2,
+                "type": "text",
+                "text": "另一条"
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "c2c:alice:bob"
+            ],
+            "filesExpired": [],
+            "messages": {
+              "c2c:alice:bob": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "deleted": true,
+                  "recalled": true,
+                  "recalledBy": "bob"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "另一条"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "引用清除：m1 不在已加载范围、m2 在，离线期间 m1 被撤回；重连按 modVer 重拉 m2，引用原文被清，之后不恢复",
+      "rule": "F-QUO-02 规则 4，F-RCL-03 规则 2a",
+      "acs": [
+        "AC-QUO-02-6"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 7
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {}
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 8,
+              "type": "text",
+              "text": "前一条"
+            },
+            {
+              "seq": 9,
+              "type": "text",
+              "text": "回复很早的消息",
+              "quote": {
+                "seq": 1,
+                "state": "normal",
+                "text": "ZXQ-QUO-1 被引用的原文"
+              }
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 8,
+                  "type": "text",
+                  "text": "前一条"
+                },
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "回复很早的消息",
+                  "quote": {
+                    "seq": 1,
+                    "state": "normal",
+                    "text": "ZXQ-QUO-1 被引用的原文"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 8
+            }
+          ],
+          "replies": {
+            "group:g1": [
+              {
+                "seq": 8,
+                "type": "text",
+                "text": "前一条"
+              },
+              {
+                "seq": 9,
+                "type": "text",
+                "text": "回复很早的消息",
+                "quote": {
+                  "seq": 1,
+                  "state": "recalled"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "group:g1"
+            ],
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 8,
+                  "type": "text",
+                  "text": "前一条"
+                },
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "回复很早的消息",
+                  "quote": {
+                    "seq": 1,
+                    "state": "recalled"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "disconnect"
+        },
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 9
+            }
+          ],
+          "replies": {
+            "group:g1": [
+              {
+                "seq": 8,
+                "type": "text",
+                "text": "前一条"
+              },
+              {
+                "seq": 9,
+                "type": "text",
+                "text": "回复很早的消息",
+                "quote": {
+                  "seq": 1,
+                  "state": "normal",
+                  "text": "ZXQ-QUO-1 被引用的原文"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "syncs": [
+              "group:g1"
+            ],
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 8,
+                  "type": "text",
+                  "text": "前一条"
+                },
+                {
+                  "seq": 9,
+                  "type": "text",
+                  "text": "回复很早的消息",
+                  "quote": {
+                    "seq": 1,
+                    "state": "recalled"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "引用清除：被引用的消息被后台删除（msgDeleted 不带 recalled），引用 state=deleted，被删的消息没有 recalled",
+      "rule": "F-QUO-02 规则 4",
+      "acs": [
+        "AC-QUO-02-2"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 3,
+              "modVer": 1
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {}
+          }
+        },
+        {
+          "op": "load",
+          "convId": "group:g1",
+          "messages": [
+            {
+              "seq": 1,
+              "type": "text",
+              "text": "ZXQ-QUO-1 被引用的原文"
+            },
+            {
+              "seq": 2,
+              "type": "text",
+              "text": "中间"
+            },
+            {
+              "seq": 3,
+              "type": "text",
+              "text": "回复",
+              "quote": {
+                "seq": 1,
+                "state": "normal",
+                "text": "ZXQ-QUO-1 被引用的原文"
+              }
+            }
+          ],
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "text": "ZXQ-QUO-1 被引用的原文"
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "中间"
+                },
+                {
+                  "seq": 3,
+                  "type": "text",
+                  "text": "回复",
+                  "quote": {
+                    "seq": 1,
+                    "state": "normal",
+                    "text": "ZXQ-QUO-1 被引用的原文"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "msgDeleted",
+            "convId": "group:g1",
+            "msgIds": [
+              "group:g1#1"
+            ],
+            "seqs": [
+              1
+            ]
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {
+              "group:g1": [
+                {
+                  "seq": 1,
+                  "type": "text",
+                  "deleted": true
+                },
+                {
+                  "seq": 2,
+                  "type": "text",
+                  "text": "中间"
+                },
+                {
+                  "seq": 3,
+                  "type": "text",
+                  "text": "回复",
+                  "quote": {
+                    "seq": 1,
+                    "state": "deleted"
+                  }
+                }
+              ]
+            },
+            "convsFetches": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "提及计数：本地 mentionUnread > 0 时收到 readUpdated（另一端已读）立即重新拉 convs，之后为 0",
+      "rule": "F-MEN-03 规则 1（R-CF-18）",
+      "acs": [
+        "AC-MEN-03-7"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 1,
+              "mentionUnread": 1
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "mentionUnread": {
+              "group:g1": 1
+            }
+          }
+        },
+        {
+          "op": "event",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 1,
+              "mentionUnread": 0
+            }
+          ],
+          "event": {
+            "type": "readUpdated",
+            "convId": "group:g1",
+            "readSeq": 9
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 1,
+            "mentionUnread": {
+              "group:g1": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "提及计数：对方撤回提及消息（msgDeleted）后重新拉 convs；5 秒内多个事件只拉一次，窗口结束时补拉；mentionUnread=0 的会话不触发",
+      "rule": "F-MEN-03 规则 1（R-CF-18）",
+      "acs": [
+        "AC-MEN-03-7"
+      ],
+      "steps": [
+        {
+          "op": "connect",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 1,
+              "mentionUnread": 2
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 4,
+              "modVer": 1,
+              "mentionUnread": 1
+            }
+          ],
+          "expect": {
+            "syncs": [],
+            "filesExpired": [],
+            "messages": {},
+            "mentionUnread": {
+              "group:g1": 2,
+              "group:g2": 1
+            }
+          }
+        },
+        {
+          "op": "event",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 2,
+              "mentionUnread": 1
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 4,
+              "modVer": 1,
+              "mentionUnread": 1
+            }
+          ],
+          "event": {
+            "type": "msgDeleted",
+            "convId": "group:g1",
+            "msgIds": [
+              "group:g1#5"
+            ],
+            "seqs": [
+              5
+            ],
+            "recalled": {
+              "by": "bob",
+              "at": 2000
+            }
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 1,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 1
+            }
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 1000,
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 1
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "readUpdated",
+            "convId": "group:g2",
+            "readSeq": 4
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 1
+            }
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 3000,
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 1
+            }
+          }
+        },
+        {
+          "op": "advance",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 2,
+              "mentionUnread": 1
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 4,
+              "modVer": 1,
+              "mentionUnread": 0
+            }
+          ],
+          "ms": 1000,
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 1,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 0
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "readUpdated",
+            "convId": "group:g2",
+            "readSeq": 4
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 0
+            }
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 10000,
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 0,
+            "mentionUnread": {
+              "group:g1": 1,
+              "group:g2": 0
+            }
+          }
+        },
+        {
+          "op": "event",
+          "convs": [
+            {
+              "convId": "group:g1",
+              "maxSeq": 9,
+              "modVer": 2,
+              "mentionUnread": 0
+            },
+            {
+              "convId": "group:g2",
+              "maxSeq": 4,
+              "modVer": 1,
+              "mentionUnread": 0
+            }
+          ],
+          "event": {
+            "type": "readUpdated",
+            "convId": "group:g1",
+            "readSeq": 9
+          },
+          "expect": {
+            "filesExpired": [],
+            "messages": {},
+            "convsFetches": 1,
+            "mentionUnread": {
+              "group:g1": 0,
+              "group:g2": 0
             }
           }
         }
