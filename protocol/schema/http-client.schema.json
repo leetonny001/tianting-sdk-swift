@@ -576,6 +576,10 @@
       ],
       "description": "F-FILE-04 规则 1：单次最多 50 项，超出 400 / 4131",
       "properties": {
+        "bareDisposition": {
+          "type": "boolean",
+          "description": "PRD-chat v1.7 F-FILE-03 规则 4（P-45）：原生客户端（Android、iOS）带 true，文件的下载地址只签 Content-Disposition: attachment，不带文件名；不带或 false 时带清洗后的文件名（H5）。图片始终 inline"
+        },
         "items": {
           "type": "array",
           "minItems": 1,

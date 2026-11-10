@@ -631,8 +631,11 @@ public final class FileClient {
     }
 
     private func batch(_ group: [UrlPromise]) async {
+        // `bareDisposition`: a native app names saved files itself, so file URLs carry `attachment` without the file
+        // name, which the system's network log would otherwise record (PRD-chat v1.7 F-FILE-03 rule 4, P-45).
         let body: JSONValue = [
-            "items": .array(group.map { ["fileId": .string($0.item.fileId), "variant": .string($0.item.variant.rawValue)] })
+            "items": .array(group.map { ["fileId": .string($0.item.fileId), "variant": .string($0.item.variant.rawValue)] }),
+            "bareDisposition": true,
         ]
         let resp: JSONValue
         do {

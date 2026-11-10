@@ -639,6 +639,18 @@ final class FileUrlTests: FileTestCase {
         ]
     }
 
+    // PRD-chat v1.7 F-FILE-03 rule 4 (P-45), TC-FILE-01-25 step 3: every URL batch asks for a bare disposition.
+    func testUrlRequestsAskForBareDisposition() async throws {
+        let (h, _) = await online()
+        let p = Task { try await h.im.getFileUrls([FileUrlItem(fileId: "F1", variant: .original)]) }
+        await settle()
+        let call = h.http.last(URLS)
+        XCTAssertEqual(call.json["bareDisposition"], .bool(true))
+        XCTAssertEqual(call.json["items"]?.arrayValue?.count, 1)
+        call.respond(200, ["items": [urlItem("F1", "original", at: h.clock.now() + 300_000)]])
+        _ = try await p.value
+    }
+
     // AC-FILE-04-10, F-FILE-04 rules 1, 6
     func testSixtyInOneTurnAreTwoBatchesThenCached() async throws {
         let (h, _) = await online()
