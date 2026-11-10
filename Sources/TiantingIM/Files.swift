@@ -246,7 +246,7 @@ public final class URLSessionObjectStoreTransport: ObjectStoreTransport {
         r.httpShouldHandleCookies = false
         r.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         for (k, v) in headers where !Self.reserved.contains(k.lowercased()) { r.setValue(v, forHTTPHeaderField: k) }
-        let delegate = ObjectStoreDelegate(sent: progress, received: nil)
+        let delegate = ObjectStoreDelegate(sent: progress)
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let (_, response) = try await session.upload(for: r, fromFile: file)
@@ -254,64 +254,208 @@ public final class URLSessionObjectStoreTransport: ObjectStoreTransport {
         return http.statusCode
     }
 
+    /// Streams the body into `destination` with a data task (problem 52, AC-RCL-03-12): no `URLSession.download`, so the
+    /// system never leaves a `CFNetworkDownload_*.tmp` of its own behind when the download is cancelled. The only partial
+    /// file is `destination` (the SDK's `.part-`), created only for a 2xx and deleted here on any failure or cancellation.
     public func get(url: String, to destination: URL, progress: @escaping @Sendable (Int64, Int64?) -> Void) async throws -> Int {
         guard let u = URL(string: url) else { throw FileTransferError.status(0) }
         var r = URLRequest(url: u)
         r.httpMethod = "GET"
         r.httpShouldHandleCookies = false
         r.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        let delegate = ObjectStoreDelegate(sent: nil, received: progress)
-        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let sink = ObjectStoreDownloadSink(destination: destination, progress: progress)
+        let session = URLSession(configuration: configuration, delegate: sink, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        let (tmp, response) = try await session.download(for: r)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        guard let http = response as? HTTPURLResponse else { throw FileTransferError.status(0) }
-        guard (200..<300).contains(http.statusCode) else { return http.statusCode }
+        let task = session.dataTask(with: r)
         do {
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: tmp, to: destination)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (c: CheckedContinuation<Int, Error>) in
+                    sink.start(task, c)
+                }
+            } onCancel: {
+                sink.cancel()
+            }
         } catch {
-            throw FileTransferError.storage
+            sink.closeFile()
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
-        return http.statusCode
     }
 }
 
-private final class ObjectStoreDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate, Sendable {
-    let sent: (@Sendable (Int64) -> Void)?
-    let received: (@Sendable (Int64, Int64?) -> Void)?
+/// Writes a GET's body to a file as it arrives. Callbacks come on the session's serial queue; `cancel` may come from
+/// any thread, so the state is behind a lock.
+private final class ObjectStoreDownloadSink: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let progress: @Sendable (Int64, Int64?) -> Void
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Int, Error>?
+    private var task: URLSessionTask?
+    private var cancelled = false
+    private var status: Int?
+    private var file: FileHandle?
+    private var storageFailed = false
+    private var received: Int64 = 0
+    private var expected: Int64?
 
-    init(sent: (@Sendable (Int64) -> Void)?, received: (@Sendable (Int64, Int64?) -> Void)?) {
+    init(destination: URL, progress: @escaping @Sendable (Int64, Int64?) -> Void) {
+        self.destination = destination
+        self.progress = progress
+    }
+
+    func start(_ task: URLSessionTask, _ c: CheckedContinuation<Int, Error>) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            c.resume(throwing: CancellationError())
+            return
+        }
+        continuation = c
+        self.task = task
+        lock.unlock()
+        task.resume()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let t = task
+        lock.unlock()
+        t?.cancel()
+    }
+
+    func closeFile() {
+        lock.lock()
+        let f = file
+        file = nil
+        lock.unlock()
+        try? f?.close()
+    }
+
+    func urlSession(
+        _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let http = response as? HTTPURLResponse else {
+            completionHandler(.cancel)
+            return
+        }
+        lock.lock()
+        status = http.statusCode
+        expected = response.expectedContentLength > 0 ? response.expectedContentLength : nil
+        let ok = (200..<300).contains(http.statusCode) && !cancelled
+        lock.unlock()
+        // Other statuses: the body is read and dropped; nothing is written (written only for a 2xx).
+        guard ok else {
+            completionHandler(.allow)
+            return
+        }
+        try? FileManager.default.removeItem(at: destination)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil),
+            let h = try? FileHandle(forWritingTo: destination)
+        else {
+            lock.lock()
+            storageFailed = true
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        lock.lock()
+        file = h
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let h = file
+        received += Int64(data.count)
+        let r = received
+        let e = expected
+        lock.unlock()
+        guard let h else { return }
+        do {
+            try h.write(contentsOf: data)
+        } catch {
+            lock.lock()
+            storageFailed = true
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        progress(r, e)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        closeFile()
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        let st = status
+        let storage = storageFailed
+        let wasCancelled = cancelled
+        lock.unlock()
+        guard let c else { return }
+        if storage {
+            c.resume(throwing: FileTransferError.storage)
+        } else if wasCancelled {
+            c.resume(throwing: CancellationError())
+        } else if let error {
+            c.resume(throwing: error)
+        } else if let st {
+            c.resume(returning: st)
+        } else {
+            c.resume(throwing: FileTransferError.status(0))
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        objectStoreChallenge(challenge, completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
+/// Server trust and client certificates take the default handling; every other challenge is cancelled.
+private func objectStoreChallenge(
+    _ challenge: URLAuthenticationChallenge,
+    _ completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+) {
+    switch challenge.protectionSpace.authenticationMethod {
+    case NSURLAuthenticationMethodServerTrust, NSURLAuthenticationMethodClientCertificate:
+        completionHandler(.performDefaultHandling, nil)
+    default:
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+}
+
+private final class ObjectStoreDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    let sent: @Sendable (Int64) -> Void
+
+    init(sent: @escaping @Sendable (Int64) -> Void) {
         self.sent = sent
-        self.received = received
     }
 
     func urlSession(
         _ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
         totalBytesExpectedToSend: Int64
     ) {
-        sent?(totalBytesSent)
+        sent(totalBytesSent)
     }
-
-    func urlSession(
-        _ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64
-    ) {
-        received?(totalBytesWritten, totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil)
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 
     func urlSession(
         _ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        switch challenge.protectionSpace.authenticationMethod {
-        case NSURLAuthenticationMethodServerTrust, NSURLAuthenticationMethodClientCertificate:
-            completionHandler(.performDefaultHandling, nil)
-        default:
-            completionHandler(.cancelAuthenticationChallenge, nil)
-        }
+        objectStoreChallenge(challenge, completionHandler)
     }
 
     func urlSession(
