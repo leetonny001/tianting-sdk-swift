@@ -2715,7 +2715,7 @@
             },
             {
               "convId": "group:g1",
-              "maxSeq": 0,
+              "maxSeq": 2,
               "modVer": 1,
               "updatedAt": 200
             },
@@ -3039,13 +3039,13 @@
           "convs": [
             {
               "convId": "c2c:alice:bob",
-              "maxSeq": 0,
+              "maxSeq": 5,
               "modVer": 1,
               "updatedAt": 300
             },
             {
               "convId": "group:g1",
-              "maxSeq": 0,
+              "maxSeq": 2,
               "modVer": 1,
               "updatedAt": 200
             }
@@ -3252,7 +3252,7 @@
           "convs": [
             {
               "convId": "c2c:alice:bob",
-              "maxSeq": 0,
+              "maxSeq": 5,
               "modVer": 1,
               "minSeq": 4,
               "updatedAt": 300
