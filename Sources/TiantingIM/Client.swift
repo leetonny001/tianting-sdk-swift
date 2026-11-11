@@ -436,6 +436,10 @@ public final class IMClient {
     /// conversation throws `IMArgumentError`; ids are deduplicated, and nothing goes up when they are all empty and `all` is
     /// false. The "@昵称 " in the text is the app's (profile nickname, not the remark, R-CF-03). 4040 (`errorReason ==
     /// "quoteUnavailable"`), 4293 (@all used up) and 4131 fail the message like other codes, with no automatic resend.
+    ///
+    /// C6: 4510 (blocked content, F-MOD-02 rule 6) fails it with `error == .code(4510)`, no automatic resend and no
+    /// manual one either (`canRetry` is false, frontend-chat 81); the error names no word (the server sends no details).
+    /// Copy: `messageFor(cmd: "send", code: 4510)`. The same holds for `sendImage` and `sendFile`.
     public func send(_ convId: String, _ raw: String, quote: QuoteRef? = nil, mentions: Mentions? = nil) throws -> SendResult {
         let text: String
         switch checkText(raw) {
@@ -473,14 +477,22 @@ public final class IMClient {
     /// The local database file of the logged-in user, when one is open.
     public var databaseURL: URL? { database?.url }
 
-    /// Manually resends a failed message with its original clientMsgId (PRD F-MSG-03 rule 2).
+    /// Whether a failed message offers "重发" (the failed bubble's button). Not for 4510, blocked content (resending it
+    /// unchanged is always 4510 again, frontend-chat 81): only "复制" and "删除"; not for `sourceMissing` either (delete
+    /// only). The error is part of the stored message, so a blocked image or file still has no "重发" after a cold start.
+    public func canRetry(_ m: Message) -> Bool {
+        m.status == .failed && m.error != .code(ErrorCode.contentBlocked) && m.error != .sourceMissing
+    }
+
+    /// Manually resends a failed message with its original clientMsgId (PRD F-MSG-03 rule 2). Does nothing when
+    /// `canRetry` is false (4510, `sourceMissing`).
     ///
     /// Images and files (F-FILE-07 rule 4): a completed upload reuses its fileId, no new upload (AC-FILE-07-2); one that
     /// did not complete uploads again from the sandbox copy (a new fileId); without the copy nothing happens and the error
     /// becomes `sourceMissing` ("原文件已不可用，请重新选择", delete only).
     public func retry(_ convId: String, _ clientMsgId: String) {
         let list = store.list(convId)
-        guard let m = list.local(clientMsgId), m.status == .failed else { return }
+        guard let m = list.local(clientMsgId), canRetry(m) else { return }
         if m.isAttachment, m.body.fileId == nil {
             retryUpload(convId, clientMsgId)
             return
@@ -1143,6 +1155,7 @@ public final class IMClient {
                     if let ack = try? decodeFrameData(SendAck.self, from: raw) { onAck(ack) }
                 case .failure(let err):
                     if err.code == ErrorCode.muted { self?.onMutedAck(err.details) }
+                    if err.code == ErrorCode.contentBlocked { self?.lateBlocked(convId, clientMsgId) }
                 }
             },
             completion: { [weak self, weak list] result in
@@ -1181,6 +1194,19 @@ public final class IMClient {
                     }
                 }
             })
+    }
+
+    /// A 4510 that arrived after the timeout failed the message: the failure becomes 4510, so the bubble no longer offers
+    /// "重发" (frontend-chat 81). Only while it is still the timeout failure: a manual resend in flight decides by its own
+    /// result. No second `sendFailed` (the app already showed the failure).
+    private func lateBlocked(_ convId: String, _ clientMsgId: String) {
+        let list = store.list(convId)
+        guard let m = list.local(clientMsgId), m.status == .failed, m.error == .timeout else { return }
+        list.update(clientMsgId) {
+            $0.error = .code(ErrorCode.contentBlocked)
+            $0.errorReason = nil
+        }
+        emitMessages(convId)
     }
 
     func fail(_ convId: String, _ clientMsgId: String, _ error: SendFailure, reason: String? = nil) {

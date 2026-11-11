@@ -99,6 +99,14 @@ private let copyTable: [String: String] = [
     "send:4137": "对方回复之前，最多只能发送 {N} 条消息",
     "send:4292": "今天发起新聊天的次数已用完，请稍后再试",
     "send:4293": "@所有人次数已用完",
+    // 4510 (C6, P-48 ⑥): a blocked message keeps the original copy; nicknames, usernames, group names and notices,
+    // friend request notes use the other one (the form keeps its content).
+    "send:4510": "消息包含不当内容，无法发送",
+    "*:4510": "内容包含不当信息，请修改后重试",
+    // Reporting (C6, frontend-chat 83): 4040 never says why; 4030 is the race with the feature switched off.
+    "report:4040": "无法举报该内容",
+    "report:4030": "举报功能暂不可用",
+    "report:4292": "今天的举报次数已用完",
     "recall:4030": "你没有权限撤回这条消息",
     "friendApply:4132": "你的好友数量已达上限",
     "friendRespond:4132": "你的好友数量已达上限",

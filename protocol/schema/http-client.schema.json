@@ -33,7 +33,29 @@
         "details": {
           "type": "object"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "const": 4510
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "details"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "4510（C6，注册、改资料命中敏感词，HTTP 451）不带 details（F-MOD-02 规则 6）"
     },
     "ConfigResponse": {
       "type": "object",
@@ -70,6 +92,10 @@
             "convSettings": {
               "type": "boolean",
               "description": "C5 会话置顶、免打扰、删除（IM_CONV_SETTINGS_ENABLED，PRD-chat 第 4.1 节，backend-chat 第 75 条）：false 时隐藏入口。老服务端没有这个字段，按 false 处理"
+            },
+            "moderation": {
+              "type": "boolean",
+              "description": "C6 举报入口（IM_MOD_ENABLED，PRD-chat 第 4.1 节，backend-chat 第 96 条）：false 时隐藏消息、资料卡、群信息页的\"举报\"。只控制举报入口，4510 的提示不看它。老服务端没有这个字段，按 false 处理"
             }
           }
         },

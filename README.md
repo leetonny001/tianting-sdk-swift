@@ -175,6 +175,25 @@ im.totalUnread()                             // 普通会话的 unread 之和 + 
 | `convs` | `deleted` 里的群不是"你已不在该群"（没有 `.convRemoved`、没有快照，AC-CVS-03-5）；`truncated` 或 `deletedTruncated` 时不推断（问题 54）；列表里的会话（和 `convAdded`）按各自的 `minSeq` 清除；服务端的 `minSeq` 比本地下限小（重新入群按新成员算、`historyVisible`，规则 6a，问题 65）时放低下限，旧历史可以重新加载 |
 | 本地库 | 第 4 版：新表 `pending_purges`。清除前先记"待清除"（单独一个事务），删除消息行、释放的页清零（不支持 `secure_delete` 时 VACUUM）、缓存文件删掉之后才去掉记录；中途失败或进程被杀，下次启动先补做（F-CVS-03 异常）。置顶、免打扰在会话 JSON 里，冷启动先显示。第 1～3 版原地升级 |
 
+## 举报、内容拦截（FE-692，C6）
+
+语义和 sdk-ts（FE-690）、sdk-kotlin（FE-691）相同（PRD-chat 第 10 节）。入口按 `AccountConfig.features.moderation`（服务端 `IM_MOD_ENABLED`；老服务端没有，为 `nil`，按关闭）；4510 的提示和它无关。
+
+```swift
+let reportId = try await im.report(.message(convId: convId, msgIds: [msgId], reason: .abuse, note: note)) // 页面只举报单条
+try await im.report(.user(userId, reason: .spam))
+try await im.report(.group(groupId, reason: .illegal))
+im.canReport(m)   // 消息菜单有没有"举报"（三套 SDK 同一口径，问题 77、88、89、92）
+im.canRetry(m)    // 失败气泡有没有"重发"：4510（内容被拦截）和 sourceMissing 没有，只有"复制""删除"
+messageFor(cmd: "send", code: 4510)  // "消息包含不当内容，无法发送"；其他命令和账号接口："内容包含不当信息，请修改后重试"
+```
+
+| | |
+|---|---|
+| `report` | 本地先校验：`targetType` 互斥（`message` 带 `convId`、`msgIds`；`user` 带 `userId`；`group` 带 `groupId`，带了别的对象的字段——空串也算——都不行），`reason` 六选一（`ReportReason.all`），`msgIds` 1～20 条且格式合法，`note` 不超过 200 个码点，不能是聊天室，单聊自己必须是参与者（还没登录时只校验格式）。不合法抛 `IMError` 4000（`details["field"]`），不发帧。服务端的 4292、4040 `reportTargetInvalid`、4030 `featureDisabled`、4290、5000、超时、未连接原样抛出，不自动重试；文案 `messageFor(cmd: "report", code:)`。`note` 不进日志和错误信息 |
+| `canReport` | 别人发的、已经发送成功（有 msgId）的 `text`、`image`、`file`，会话是单聊（我是参与者）或群。自己的、`tip`、`custom`、发送中、排队、失败的、后台删除的都没有。撤回的（撤回提示行，F-MOD-03 规则 2a）只在别人的、不是我撤回的消息上有（撤回者不知道时按别人撤回，问题 89），自己的消息被别人撤回也没有。只有本机看过的：`seq ≤` 本地会话的 `readSeq`（服务端校验 `readSeq ≥ seq`），会话不在本地列表里的没有（问题 92）。开关由页面另外判断 |
+| 4510 | `send`、`sendImage`、`sendFile` 收到 4510：标记失败、`error == .code(4510)`，不自动重发，`retry` 也不发、不重新上传；超时之后才到的 4510 同样改成 4510（不再发 `.sendFailed`）。错误里没有命中的词。图片、文件的失败原因随 `outbox` 进本地库，冷启动后仍然没有"重发"（文本的失败消息本来就不落盘）。其他 WS 命令（建群、改群名和公告、好友申请）的 4510 原样抛 `IMError`；账号接口（注册、改昵称）抛 `AccountError(status: 451, code: 4510)` |
+
 ## 本地库
 
 每个用户一个 SQLite 文件（文件名是 userId 的十六进制，避免大小写不敏感的文件系统把 alice 和 Alice 合并），保存会话、已确认的消息（每个会话最近 `maxCachedMessagesPerConversation` 条，默认 100）、社交状态和没发出的图片文件（`outbox`）。token、预签名地址和未确认的文本不落盘。
@@ -204,6 +223,8 @@ scripts/sync-protocol.sh                       # 从 tianting-server 检出同�
 文件的集成测试（`FileIntegrationTests`）另外启动 `Tests/IntegrationResources/fake_s3.py`（标准库 Python 3，只监听 127.0.0.1，不验签名，只验调度逻辑，和 sdk-ts 是同一个文件），服务端开 `IM_FILES_ENABLED=1`。
 
 推送的集成测试（`PushIntegrationTests`）自己用 `IM_PUSH_ENABLED=1` 启动一个服务端，开关关闭时的行为在 `PushDisabledIntegrationTests`。
+
+举报和内容拦截的集成测试（`ReportIntegrationTests`、`BlockedIntegrationTests`）用 `IM_MOD_ENABLED=1` 和测试专用的 `IM_REPORT_KEY` 启动服务端；后者的调用方多一个 `moderation.words` scope（`TestServer.start(env:extraScopes:)`，不加进公共 scope，免得服务端不认识时其他用例跟着失败），只用特征词。
 
 集成测试需要 Go 和 tianting-server 的源码：环境变量 `TIANTING_SERVER_DIR`，否则找同级目录的 `../tianting-server/server`、`../im-mvp/server`；都没有时跳过。
 

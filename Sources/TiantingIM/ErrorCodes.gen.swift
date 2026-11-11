@@ -41,6 +41,7 @@ public enum ErrorCode {
     public static let usernameTaken = 4095
     public static let fileNotReady = 4096
     public static let recallWindowExpired = 4097
+    public static let reportAlreadyHandled = 4098
     public static let groupMemberLimitExceeded = 4130
     public static let batchLimitExceeded = 4131
     public static let friendLimitExceeded = 4132
@@ -56,6 +57,7 @@ public enum ErrorCode {
     public static let quotaExceeded = 4292
     public static let mentionAllLimited = 4293
     public static let accountLoginLocked = 4294
+    public static let contentBlocked = 4510
     public static let `internal` = 5000
     public static let serviceUnavailable = 5030
     public static let objectStoreUnavailable = 5032
@@ -107,6 +109,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4095: ErrorInfo(name: "USERNAME_TAKEN", retryable: false, message: "用户名已存在或保留"),
     4096: ErrorInfo(name: "FILE_NOT_READY", retryable: false, message: "文件未完成上传，或已绑定其他消息"),
     4097: ErrorInfo(name: "RECALL_WINDOW_EXPIRED", retryable: false, message: "超过撤回时限（details.windowSeconds）"),
+    4098: ErrorInfo(name: "REPORT_ALREADY_HANDLED", retryable: false, message: "举报已被处理"),
     4130: ErrorInfo(name: "GROUP_MEMBER_LIMIT_EXCEEDED", retryable: false, message: "群成员已达上限"),
     4131: ErrorInfo(name: "BATCH_LIMIT_EXCEEDED", retryable: false, message: "单次批量操作数量超限"),
     4132: ErrorInfo(name: "FRIEND_LIMIT_EXCEEDED", retryable: false, message: "好友数量已达上限"),
@@ -122,6 +125,7 @@ let errorInfoTable: [Int: ErrorInfo] = [
     4292: ErrorInfo(name: "QUOTA_EXCEEDED", retryable: false, message: "今天的次数已用完"),
     4293: ErrorInfo(name: "MENTION_ALL_LIMITED", retryable: false, message: "@ 所有人次数用完（details.retryAfterSeconds）"),
     4294: ErrorInfo(name: "ACCOUNT_LOGIN_LOCKED", retryable: false, message: "尝试过多，暂时锁定（details.retryAfterSeconds）"),
+    4510: ErrorInfo(name: "CONTENT_BLOCKED", retryable: false, message: "内容被拦截"),
     5000: ErrorInfo(name: "INTERNAL", retryable: true, message: "服务器内部错误"),
     5030: ErrorInfo(name: "SERVICE_UNAVAILABLE", retryable: true, message: "服务暂不可用"),
     5032: ErrorInfo(name: "OBJECT_STORE_UNAVAILABLE", retryable: true, message: "对象存储暂不可用（reason: completeInProgress 是同一上传的 complete 正在进行）"),
@@ -147,6 +151,7 @@ public let clientErrorCodes: [Int] = [
     4290,
     4292,
     4294,
+    4510,
     5000,
     5030,
     5032,
@@ -154,11 +159,11 @@ public let clientErrorCodes: [Int] = [
 
 /// Error code -> the reasons that refine it (PRD-chat 11.5). A reason not listed here must not raise an error.
 public let errorReasons: [Int: [String]] = [
-    4000: ["passwordWeak", "recoveryCodeStale", "fileKindMismatch", "uploadMismatch", "fileNameTooLong"],
+    4000: ["passwordWeak", "recoveryCodeStale", "fileKindMismatch", "uploadMismatch", "fileNameTooLong", "customDisabled"],
     4011: ["tokenSuperseded"],
     4019: ["invalid", "expired", "revoked", "superseded", "replayDetected", "credentialsChanged", "loggedOutOthers", "accountDeleted"],
     4030: ["registerClosed", "inviteInvalid", "accountSessionRequired", "accountExists", "accountDeletionPending", "featureDisabled", "mentionAllForbidden"],
-    4040: ["quoteUnavailable"],
+    4040: ["quoteUnavailable", "reportTargetInvalid"],
     4290: ["recoverLimited", "uploadPendingLimit"],
     5032: ["completeInProgress"],
 ]

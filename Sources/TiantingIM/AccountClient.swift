@@ -192,11 +192,16 @@ public struct AccountConfig: Sendable, Equatable, Decodable {
         /// entries (AC-CVS-01-6). nil when an older server does not send it. Off only blocks new changes (4030): the SDK
         /// keeps applying existing pins, notifications off and deletions either way (P-46 ②).
         public var convSettings: Bool?
+        /// Reporting (C6, IM_MOD_ENABLED; backend-chat 96): false hides "举报" in the message menu, the profile card and
+        /// the group info page. nil when an older server does not send it, which means off. It only gates the report
+        /// entries: the 4510 copy does not depend on it (frontend-chat 76).
+        public var moderation: Bool?
 
-        public init(files: Bool, msgActions: Bool? = nil, convSettings: Bool? = nil) {
+        public init(files: Bool, msgActions: Bool? = nil, convSettings: Bool? = nil, moderation: Bool? = nil) {
             self.files = files
             self.msgActions = msgActions
             self.convSettings = convSettings
+            self.moderation = moderation
         }
     }
     public struct Limits: Sendable, Equatable, Decodable {

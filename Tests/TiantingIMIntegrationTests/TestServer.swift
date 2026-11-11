@@ -77,16 +77,17 @@ final class TestServer: @unchecked Sendable {
         return Int(UInt16(bigEndian: got.sin_port))
     }
 
-    /// Starts a server. Throws `XCTSkip` when no server source is around.
-    static func start(env extra: [String: String] = [:]) async throws -> TestServer {
+    /// Starts a server. Throws `XCTSkip` when no server source is around. `extraScopes` go to this server's caller only
+    /// (C6's moderation.words): a server that does not know a scope refuses to start, so they stay out of the shared list.
+    static func start(env extra: [String: String] = [:], extraScopes: [String] = []) async throws -> TestServer {
         guard let dir = serverDir() else {
             throw XCTSkip("no tianting-server checkout; set TIANTING_SERVER_DIR to run integration tests")
         }
         let bin = try build(dir: dir)
-        return try await TestServer(binary: bin, extraEnv: extra)
+        return try await TestServer(binary: bin, extraEnv: extra, extraScopes: extraScopes)
     }
 
-    private init(binary: URL, extraEnv: [String: String]) async throws {
+    private init(binary: URL, extraEnv: [String: String], extraScopes: [String]) async throws {
         let port = try TestServer.freePort()
         let adminPort = try TestServer.freePort()
         let data = FileManager.default.temporaryDirectory
@@ -96,7 +97,7 @@ final class TestServer: @unchecked Sendable {
         let spec: [[String: Any]] = [
             [
                 "id": TestServer.callerId, "alg": "hmac-sha256",
-                "secret": Data(TestServer.callerSecret.utf8).base64EncodedString(), "scopes": TestServer.callerScopes,
+                "secret": Data(TestServer.callerSecret.utf8).base64EncodedString(), "scopes": TestServer.callerScopes + extraScopes,
                 // Whoever holds push.all must list its types, or the server refuses to start (PRD-live F-PUSH-09 rule 3).
                 "pushTypes": ["notice", "promo"],
             ]

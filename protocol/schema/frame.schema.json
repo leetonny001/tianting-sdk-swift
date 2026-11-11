@@ -102,14 +102,35 @@
         },
         "details": {
           "type": "object",
-          "description": "可选的扩展信息（PRD-admin 11.1 节）：4031 → {scope, groupId?, mutedUntil}，4034 → {bannedUntil}；SDK 忽略不认识的键"
+          "description": "可选的扩展信息（PRD-admin 11.1 节）：4031 → {scope, groupId?, mutedUntil}，4034 → {bannedUntil}；SDK 忽略不认识的键。4510（C6）不带 details，不告诉命中了哪个词（F-MOD-02 规则 6）"
         },
         "reason": {
           "type": "string",
           "description": "细分同一个错误码，如 4030 的 c2cBodyDisabled（PRD-admin 10.3 节）"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "const": 4510
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "details"
+              ]
+            }
+          }
+        }
+      ]
     },
     "ClientFrame": {
       "oneOf": [
@@ -226,6 +247,9 @@
         },
         {
           "$ref": "#/$defs/ConvDeleteReq"
+        },
+        {
+          "$ref": "#/$defs/ReportReq"
         }
       ]
     },
@@ -2037,7 +2061,7 @@
         },
         "data": {
           "type": "object",
-          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated, deleted?, deletedTruncated?}；convSet → {conv}；convDelete → {clearedSeq}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}；deviceNotificationSettings → {showDetail}；deviceNotificationRegister、deviceNotificationUnregister、presence、recall → {}",
+          "description": "按请求类型不同：auth → {userId, serverTime}；send → {msgId, convId, seq?, ts}；sync → {messages, hasMore}；convs → {convs, truncated, deleted?, deletedTruncated?}；convSet → {conv}；convDelete → {clearedSeq}；report → {reportId}；joinRoom → {online, recent}；其余为空对象；社交命令（PRD-social 9.1 节）：修改类 → {status?, ver, changed, items}；friendRequestsSeen → {requestSeenVer, ver, changed}；setPrivacy → {ver, changed}；socialSync → {full, untilVer, latestVer, hasMore, cursor, restart?, friends, requests, blocks, requestSeenVer, settings, mode, strangerMsgLimit, official}；userSearch → {user}；users → {users}；myGroups → {groups, nextCursor}；pushSync → {pushes, hasMore, latestSeq}；deviceNotificationSettings → {showDetail}；deviceNotificationRegister、deviceNotificationUnregister、presence、recall → {}",
           "properties": {
             "userId": {
               "$ref": "#/$defs/UserId"
@@ -2456,6 +2480,11 @@
             "deletedTruncated": {
               "type": "boolean",
               "description": "convs：deleted 超过上限被截断时为 true（C5），其他时候不带"
+            },
+            "reportId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "description": "report（C6）：举报 ID；24 小时内对同一对象的重复提交返回第一次的 reportId"
             }
           },
           "additionalProperties": false
@@ -3678,6 +3707,192 @@
               "description": "0 表示没有消息的会话（空群）"
             }
           },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReportReq": {
+      "type": "object",
+      "description": "PRD-chat F-MOD-03（C6，BE-491）：举报。普通带 id 的命令，ack data 是 {reportId}。按 targetType 互斥：message 必须有 convId、msgIds（非空），不能带 userId、groupId；user 必须有 userId；group 必须有 groupId，两者都不能带其他对象的字段。msgIds 超过 20 条不写进 Schema（服务端 4131，AC-MOD-03-2）；note 的 0～200 个码点由服务端按码点判（超出 4000）。校验顺序（BE-495）：格式 4000 / 4131 → 开关（IM_MOD_ENABLED 关闭 4030 featureDisabled）→ 每人每天 20 次（4292）→ 对象校验（不存在、不是参与者、看不到、没有关联，一律 4040 reportTargetInvalid，响应相同）→ 幂等（同一举报人对同一对象 24 小时内重复提交返回第一次的 reportId）。被举报人、举报人都不收任何帧",
+      "required": [
+        "id",
+        "cmd",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ReqId"
+        },
+        "cmd": {
+          "const": "report"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "targetType",
+            "reason"
+          ],
+          "properties": {
+            "targetType": {
+              "enum": [
+                "message",
+                "user",
+                "group"
+              ]
+            },
+            "convId": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ConvId"
+                },
+                {
+                  "not": {
+                    "pattern": "^room:"
+                  }
+                }
+              ],
+              "description": "targetType=message：被举报消息所在的会话（单聊或群聊，聊天室不能举报）"
+            },
+            "msgIds": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,64}$"
+              },
+              "description": "targetType=message：同一会话的 1～20 条消息（上限由服务端判，4131）；客户端第一批只举报单条"
+            },
+            "userId": {
+              "$ref": "#/$defs/UserId",
+              "description": "targetType=user：被举报的用户"
+            },
+            "groupId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "description": "targetType=group：被举报的群"
+            },
+            "reason": {
+              "enum": [
+                "spam",
+                "abuse",
+                "porn",
+                "fraud",
+                "illegal",
+                "other"
+              ]
+            },
+            "note": {
+              "type": "string",
+              "description": "举报人的附言，0～200 个码点（服务端按码点判，超出 4000）。按正文对待：只进加密的证据，不进日志和审计；群举报、群消息举报的 note 要证据授权才能看，用户举报、单聊消息举报的按单聊对待（P-48 ①）"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "targetType"
+                ],
+                "properties": {
+                  "targetType": {
+                    "const": "message"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "convId",
+                  "msgIds"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "userId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "groupId"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "targetType"
+                ],
+                "properties": {
+                  "targetType": {
+                    "const": "user"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "userId"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "convId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "msgIds"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "groupId"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "targetType"
+                ],
+                "properties": {
+                  "targetType": {
+                    "const": "group"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "groupId"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "convId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "msgIds"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "userId"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
           "additionalProperties": false
         }
       },
