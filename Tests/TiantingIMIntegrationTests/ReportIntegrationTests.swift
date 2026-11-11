@@ -207,7 +207,7 @@ final class BlockedIntegrationTests: ModerationC6Case {
         if BlockedIntegrationTests.srv == nil {
             var env = MOD_ENV
             env["IM_REGISTER_MODE"] = "invite"
-            let s = try await TestServer.start(env: env, extraScopes: ["moderation.words"])
+            let s = try await TestServer.start(env: env, extraScopes: ["moderation.words", "social.friends"])
             BlockedIntegrationTests.srv = s
             try await s.signed("POST", "/admin/moderation/words", ["word": WORD])
         }
@@ -258,7 +258,12 @@ final class BlockedIntegrationTests: ModerationC6Case {
     func testGroupNameWithTheWordIs4510WithoutDetails() async throws {
         let (u1, u2, u3) = (uid("bc"), uid("bd"), uid("be"))
         try await users(u1, u2, u3)
+        // The word check of groupCreate comes after the invitee checks (F-MOD-02 rule 5, backend-chat 112, BE-499 issue 137):
+        // the invitees must be friends or the answer is 4035 first. Control: the same members with a plain name work.
+        try await server.signed("POST", "/admin/friends/import", ["pairs": [u2, u3].map { ["a": u1, "b": $0] }])
         let a = try await login(u1)
+        let ok = try await a.createGroup(name: "正常群名", members: [u2, u3])
+        XCTAssertFalse(ok.groupId.isEmpty)
         let e = await errorOf { _ = try await a.createGroup(name: "群 \(WORD)", members: [u2, u3]) }
         XCTAssertEqual((e as? IMError)?.code, 4510, "\(String(describing: e))")
         XCTAssertNil((e as? IMError)?.details)
