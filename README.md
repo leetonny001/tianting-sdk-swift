@@ -215,7 +215,7 @@ messageFor(cmd: "send", code: 4510)  // "消息包含不当内容，无法发送
 swift test --skip TiantingIMIntegrationTests   # 单元测试（假传输层 + 假时钟）
 swift test --filter TiantingIMIntegrationTests # 集成测试：go build 并启动真实 im-server
 python3 -I scripts/gen-errors/gen_errors.py    # 从 protocol/errors.json 重新生成 ErrorCodes.gen.swift（--check 只比较）
-scripts/sync-protocol.sh                       # 从 tianting-server 检出同步 protocol/，并重新生成错误码
+scripts/sync-protocol.sh [检出目录] [提交]       # 用 git archive 取 tianting-server 已提交的 protocol/（默认 HEAD，问题 90），并重新生成错误码；也可以传 git archive 导出的目录 + 提交号
 ```
 
 账号的集成测试（`AccountIntegrationTests`）用 `IM_REGISTER_MODE=invite`、`IM_REFRESH_OVERLAP=61s`、`IM_TEST_DISABLE_AUTH_LOCK=1` 自己启动一个服务端，有一条要真的等一个 61 秒的窗口。
